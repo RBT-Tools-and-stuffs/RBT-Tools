@@ -188,6 +188,12 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
 
 .vbadge{display:inline-block;background:var(--primary-soft);color:var(--primary-deep);border-radius:8px;
   padding:2px 8px;font-weight:900;font-size:11px;letter-spacing:.06em;vertical-align:middle}
+/* one control, two doors: import on the left, export on the right */
+.side-split{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow)}
+.side-split button{flex:1;min-height:44px;font-weight:800;font-size:13px;color:var(--ink);transition:background .15s}
+.side-split button:hover{background:var(--primary-soft);color:var(--primary-deep)}
+.side-split button:first-child{border-right:1px solid var(--line)}
+.side-split.side-mini button{min-height:36px;font-size:12px;color:var(--muted)}
 /* laptop-first section nav: sticky pills that jump the long page */
 .cpnav{position:sticky;top:0;z-index:12;display:flex;gap:7px;flex-wrap:wrap;padding:10px 0;
   background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);margin-bottom:6px}
@@ -235,17 +241,22 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
   <aside id="side">
     <div class="side-head">
       <h1>Client Profiles <span class="vbadge" id="verBadge">1.05</span></h1>
+      <p style="color:#9a3b30;font-weight:900;font-size:11px;letter-spacing:.04em;margin-top:6px">⚠ NOT APPROVED — no real-world use until permission is given</p>
     </div>
     <div class="side-list" id="plist"></div>
     <div class="side-foot">
       <button class="btn btn-primary" id="newBtn"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg> New client</button>
-      <button class="btn btn-ghost" id="importBtn">Import folder (.zip)</button>
-      <button class="btn btn-ghost" id="clinicBtn" title="Every client, one zip — anyone who imports it gets the whole caseload at once">⬆ Export clinic file</button>
-      <button class="btn btn-ghost" id="fbBtn">Give feedback</button>
-      <button class="btn btn-ghost btn-sm" id="newsBtn">What's new</button>
+      <div class="side-split">
+        <button id="importBtn" title="Bring in a clinic or client file">⬇ Import file</button>
+        <button id="exportBtn" title="Download the whole caseload as one file">⬆ Export file</button>
+      </div>
       <button class="btn btn-primary btn-sm" id="secBtn" title="Connect the clinic system, set the tablet code, print the office card">🔐 Security & sync</button>
       <button class="btn btn-ghost btn-sm" id="libBtn" title="Shared pictures, preloaded on every tablet">🖼 Clinic library</button>
       <button class="btn btn-ghost btn-sm" id="guideBtn">📖 Guide</button>
+      <div class="side-split side-mini">
+        <button id="newsBtn">What's new</button>
+        <button id="fbBtn">Feedback</button>
+      </div>
       <div class="side-note hidden" id="tokWarn" style="color:#9a3b30;font-weight:800"></div>
       <input type="file" id="importInp" accept=".zip,application/zip,application/x-zip-compressed" class="hidden">
       <div class="side-note">Stays on this computer until you export. Client codes only — no PHI.</div>
@@ -262,8 +273,8 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
    RBT TOOLS SETUP · 1.0 — profiles → client folders
    Multiple presets per tool · client.json fidelity · previews
    ============================================================ */
-const APP_VERSION = 14; // experimental build — pairs with RBT Tools 1.09
-const APP_VERSION_LABEL = '1.09x';
+const APP_VERSION = 15; // experimental build — pairs with RBT Tools 1.10
+const APP_VERSION_LABEL = '1.10x';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -331,17 +342,33 @@ function normCode(c) {
 
 /* ---------- authors: every BCBA/intern picks a color, their cases wear it ---------- */
 const Authors = {
-  map: {},
-  load() { try { this.map = JSON.parse(LS.getItem('rbts.authors') || '{}') || {}; } catch { this.map = {}; } },
-  save() { try { LS.setItem('rbts.authors', JSON.stringify(this.map)); } catch {} },
+  map: {}, disp: [],
+  load() { try { this.map = JSON.parse(LS.getItem('rbts.authors') || '{}') || {}; } catch { this.map = {}; }
+    try { this.disp = JSON.parse(LS.getItem('rbts.authorNames') || '[]') || []; } catch { this.disp = []; } },
+  save() { try { LS.setItem('rbts.authors', JSON.stringify(this.map)); LS.setItem('rbts.authorNames', JSON.stringify(this.disp)); } catch {} },
   key(n) { return String(n || '').trim().toLowerCase(); },
   color(n) { const c = this.map[this.key(n)]; return /^#[0-9a-fA-F]{6}$/.test(c || '') ? c : null; },
-  set(n, c) { const k = this.key(n); if (!k) return; this.map[k] = c; this.save(); },
+  set(n, c) { const k = this.key(n); if (!k) return; this.map[k] = c;
+    if (!this.disp.some(x => x.toLowerCase() === k)) this.disp.push(String(n).trim());
+    this.save(); try { LS.setItem('rbts.me', String(n).trim()); } catch {} },
+  names() { return this.disp.slice(0, 20); },
+  removeName(n) { const k = this.key(n); delete this.map[k]; this.disp = this.disp.filter(x => x.toLowerCase() !== k); this.save(); },
 };
 
 /* ---------- the CLINIC LIBRARY — visuals every BCBA curates together.
    Publishes with Save-to-clinic; lands preloaded in every tablet's picker;
    travels between Client Profiles instances via the clinic file. ---------- */
+/* deleted clients leave a tombstone — publish carries it, imports honor it,
+   nothing resurrects by accident */
+const Tombs = {
+  get() { try { return JSON.parse(LS.getItem('rbts.deleted') || '{}') || {}; } catch { return {}; } },
+  set(o) { try { LS.setItem('rbts.deleted', JSON.stringify(o)); } catch {} },
+  add(slug) { if (!slug || /^unnamed-/.test(slug)) return; const o = this.get(); o[slug] = Date.now(); this.set(o); },
+  merge(remote) { const o = this.get(); let ch = false;
+    Object.entries(remote || {}).forEach(([s, ts]) => { if ((o[s] || 0) < ts) { o[s] = ts; ch = true; } });
+    if (ch) this.set(o); },
+  clear(slug) { const o = this.get(); if (o[slug]) { delete o[slug]; this.set(o); } },
+};
 const ClinicVis = {
   items: [],
   load() { try { this.items = JSON.parse(LS.getItem('rbts.clinicVis') || '[]') || []; } catch { this.items = []; } },
@@ -605,10 +632,11 @@ function render() {
     m.querySelector('#delConfirm').oninput = (e) => { yes.disabled = e.target.value.trim().toUpperCase() !== word.toUpperCase(); };
     yes.onclick = () => {
       scrim.remove();
+      Tombs.add(p.code.slug); // the tombstone rides the next save — no resurrections, ever
       Profiles.list = Profiles.list.filter(x => x.id !== p.id);
       Profiles.activeId = Profiles.list[0] ? Profiles.list[0].id : null;
       Profiles.save(); gcImages(); render();
-      flash('Removed here — remember to Save to clinic so tablets follow');
+      flash('Removed — Save to clinic to make it final everywhere');
     };
     r.append(no, yes); m.appendChild(r); scrim.appendChild(m);
     scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
@@ -652,8 +680,8 @@ function render() {
     const name = nameIn.value.trim(), slug = slugify(name);
     if (!name || !slug || slug === p.code.slug) { nameIn.value = p.code.name; return; }
     if (codeTaken(slug, p.id)) { flash(`“${name}” is already another client`); nameIn.value = p.code.name; return; }
-    const doIt = () => { p.code = { ...p.code, name: name.slice(0, 24), slug }; markDirty(); paintCode(); flash(`Code is now ${p.code.emoji} ${name}`); };
-    if (p.updated) confirm2(`Rename ${p.code.name}?`, 'This folder has been exported before — tablets keyed to the old code will treat the next import as a brand-new client.', doIt, 'Rename');
+    const doIt = () => { p.code = { ...p.code, name: name.slice(0, 24), slug }; markDirty(); paintCode(); try { paintAnimals(); } catch {} flash(`Code is now ${p.code.emoji} ${name}`); };
+    if (p.code.name) confirm2(`Rename ${p.code.name}?`, 'Changing an established code makes tablets treat the next save as a brand-new client.', doIt, 'Rename');
     else doIt();
   };
   nameIn.onblur = applyName;
@@ -665,13 +693,35 @@ function render() {
   emF.appendChild(emIn);
   edRow.append(nameF, emF);
   c1.appendChild(edRow);
-  /* quick emoji grid — one tap, and the input takes anything beyond it */
+  /* the ANIMAL GRID is the picker: one tap sets name + emoji together.
+     Animals another client already wears are locked; changing an
+     established code demands a yes. Free typing stays for anything beyond. */
+  const ANIMALS = [['Fox','🦊'],['Owl','🦉'],['Bear','🐻'],['Frog','🐸'],['Duck','🦆'],['Deer','🦌'],['Otter','🦦'],['Koala','🐨'],
+    ['Panda','🐼'],['Bunny','🐰'],['Turtle','🐢'],['Whale','🐳'],['Tiger','🐯'],['Puppy','🐶'],['Kitten','🐱'],['Robin','🐦'],
+    ['Lion','🦁'],['Moose','🫎'],['Butterfly','🦋'],['Bee','🐝'],['Octopus','🐙'],['Dino','🦕'],['Unicorn','🦄'],['Dolphin','🐬']];
   const emGrid = el('div', 'code-pick'); emGrid.style.marginTop = '10px';
-  ['🦊','🦉','🐻','🐸','🦆','🦌','🦦','🐨','🐼','🐰','🐢','🐳','🐯','🐶','🐱','🐦','🦁','🐮','🦋','🐝','🐙','🦕','🦄','🐬'].forEach(e2 => {
-    const b = el('button', p.code.emoji === e2 ? 'on' : '', e2);
-    b.onclick = () => { p.code.emoji = e2; emIn.value = e2; markDirty(); paintCode(); $$('button', emGrid).forEach(x => x.classList.toggle('on', x.textContent === e2)); };
-    emGrid.appendChild(b);
-  });
+  const applyAnimal = (nm, e2) => {
+    const slug = slugify(nm);
+    if (codeTaken(slug, p.id)) { flash(`“${nm}” already belongs to another client`); return; }
+    const doIt = () => { p.code = { ...p.code, name: nm, slug, emoji: e2 };
+      nameIn.value = nm; emIn.value = e2; markDirty(); paintCode(); paintAnimals(); };
+    if (p.code.name && p.code.name !== nm)
+      confirm2(`Change ${p.code.name} to ${nm}?`, 'Changing an established code makes tablets treat the next save as a brand-new client.', doIt, 'Change code');
+    else doIt();
+  };
+  const paintAnimals = () => {
+    emGrid.innerHTML = '';
+    ANIMALS.forEach(([nm, e2]) => {
+      const taken = codeTaken(slugify(nm), p.id);
+      const mine = p.code.name === nm;
+      const b = el('button', mine ? 'on' : '', e2);
+      b.title = taken ? `${nm} — already a client` : nm;
+      if (taken && !mine) { b.disabled = true; b.style.cssText = 'opacity:.25;filter:grayscale(1);cursor:not-allowed'; }
+      else b.onclick = () => applyAnimal(nm, e2);
+      emGrid.appendChild(b);
+    });
+  };
+  paintAnimals();
   c1.appendChild(emGrid);
   /* color — palette or anything */
   const colRow = el('div', 'row'); colRow.style.marginTop = '10px';
@@ -686,8 +736,31 @@ function render() {
   paintColorDots();
   colRow.append(el('span', 'label', 'Color'), colDots, colIn);
   c1.appendChild(colRow);
-  const fBy = el('div', 'field'); fBy.style.marginTop = '14px'; fBy.style.maxWidth = '440px';
-  fBy.appendChild(el('span', 'label', 'Updated by (role or first name)'));
+  const fBy = el('div', 'field'); fBy.style.marginTop = '14px'; fBy.style.maxWidth = '520px';
+  fBy.appendChild(el('span', 'label', 'Author — pick your preset, or create one below'));
+  /* saved authors: filling name + color once IS creating your profile */
+  const presetRow = el('div', 'row'); presetRow.style.marginBottom = '8px';
+  const paintPresets = () => {
+    presetRow.innerHTML = '';
+    (Authors.names ? Authors.names() : []).forEach(nm => {
+      const col = Authors.color(nm);
+      const ch = el('button', 'chip' + ((p.updatedBy || '').trim().toLowerCase() === nm.toLowerCase() ? ' on' : ''));
+      ch.innerHTML = `<span style="width:10px;height:10px;border-radius:50%;background:${esc(col || '#999')};display:inline-block"></span>${esc(nm)}`;
+      ch.onclick = () => { if (ch._held) { ch._held = false; return; } p.updatedBy = nm; by.value = nm; markDirty(); refreshExportName(); paintAc(); paintPresets(); drawSidebar(); };
+      /* hold → typed delete (removes the PRESET only — clients keep their author stamp) */
+      let hT = 0;
+      ch.onpointerdown = () => { hT = setTimeout(() => { ch._held = true;
+        const typed = prompt(`Delete the author preset “${nm}”?\nClient profiles keep their author. Type the name to confirm:`);
+        if (typed && typed.trim().toLowerCase() === nm.toLowerCase()) { Authors.removeName(nm); paintPresets(); flash('Preset deleted — profiles untouched'); }
+      }, 650); };
+      ch.onpointerup = ch.onpointerleave = () => clearTimeout(hT);
+      presetRow.appendChild(ch);
+    });
+    const nw = el('button', 'chip', '＋ Create new');
+    nw.onclick = () => { p.updatedBy = ''; by.value = ''; by.focus(); paintAc(); paintPresets(); };
+    presetRow.appendChild(nw);
+  };
+  fBy.appendChild(presetRow);
   const by = el('input', 'tin'); by.maxLength = 24; by.placeholder = 'e.g. BCBA, Intern, Ms. R'; by.value = p.updatedBy || '';
   fBy.appendChild(by);
   /* the author's OWN color — one pick, and every case they touch wears it.
@@ -707,7 +780,7 @@ function render() {
     CODE_COLORS.forEach(c2 => {
       const b = el('button', cur === c2.hex ? 'on' : '', cur === c2.hex ? '✓' : '');
       b.style.background = c2.hex; b.style.color = '#fff'; b.title = c2.name;
-      b.onclick = () => { if (needName()) return; Authors.set(by.value, c2.hex); paintAc(); drawSidebar(); flash(`${by.value.trim()}'s color saved`); };
+      b.onclick = () => { if (needName()) return; Authors.set(by.value, c2.hex); paintAc(); try { paintPresets(); } catch {} drawSidebar(); flash(`${by.value.trim()}'s preset saved`); };
       acPick.appendChild(b);
     });
     if (cur) acCustom.value = cur;
@@ -1534,6 +1607,17 @@ async function importZip(file) {
     const entries = (await unzipAll(await file.arrayBuffer()))
       .map(e => ({ ...e, path: e.path.replace(/\\/g, '/') }))
       .filter(e => !e.path.includes('__MACOSX') && !e.path.split('/').some(s => s.startsWith('.')));
+    /* tombstones first: theirs kill ours (if newer), ours block resurrection */
+    try {
+      const man = entries.find(e => e.path === 'clinic.json');
+      if (man) { const mj = JSON.parse(new TextDecoder().decode(man.data)); Tombs.merge(mj.deleted); }
+    } catch {}
+    {
+      const t2 = Tombs.get();
+      const before = Profiles.list.length;
+      Profiles.list = Profiles.list.filter(pr0 => !(t2[pr0.code.slug] && t2[pr0.code.slug] > (pr0.ts || 0)));
+      if (Profiles.list.length !== before) { if (!Profiles.list.some(x => x.id === Profiles.activeId)) Profiles.activeId = Profiles.list[0] ? Profiles.list[0].id : null; Profiles.save(); }
+    }
     /* clinic library travels in the same zip — newer wins */
     try {
       const libConf = entries.find(e => e.path === 'library.json' || e.path.endsWith('/library.json'));
@@ -1541,13 +1625,17 @@ async function importZip(file) {
         const lib = JSON.parse(new TextDecoder().decode(libConf.data));
         if ((lib.ts || 0) > ClinicVis.ts()) {
           const arr = [];
+          const remoteKeys = new Set();
           for (const it of (lib.items || []).slice(0, 400)) {
             const e2 = entries.find(x => x.path === it.path); if (!e2) continue;
             const blob = await processImage(new Blob([e2.data], { type: 'image/jpeg' }));
             const id = await storeImage(blob);
-            arr.push({ img: id, label: String(it.label || '').slice(0, 24), cat: ['places','activities','rewards','people'].includes(it.cat) ? it.cat : 'activities', tags: (it.tags || []).map(t => String(t).slice(0, 18)).slice(0, 8) });
+            remoteKeys.add(String(it.label || '').toLowerCase() + '|' + (it.h || ''));
+            arr.push({ img: id, label: String(it.label || '').slice(0, 24), cat: ['places','activities','rewards','people'].includes(it.cat) ? it.cat : 'activities', tags: (it.tags || []).map(t => String(t).slice(0, 18)).slice(0, 8), h: it.h, by: String(it.by || '').slice(0, 24) || undefined });
           }
-          ClinicVis.setAll(arr, lib.ts);
+          /* colleagues' concurrent additions survive: local uniques ride along */
+          ClinicVis.list().forEach(cv => { const k = (cv.label || '').toLowerCase() + '|' + (cv.h || ''); if (cv.h && !remoteKeys.has(k)) arr.push(cv); });
+          ClinicVis.setAll(arr, Math.max(lib.ts, Date.now()));
           flash(`Clinic library updated (${arr.length} pictures)`);
         }
       }
@@ -1556,7 +1644,10 @@ async function importZip(file) {
       .sort((a, b) => a.path.split('/').length - b.path.split('/').length);
     if (!confs.length) throw new Error('No client.json in that zip — only folders exported by the Client Profiles app can be opened here.');
     if (confs.length > 1) { await importClinic(confs, entries, prog); return; }
-    const { p } = await parseClientFolder(confs[0], entries);
+    const { p, ts: singleTs } = await parseClientFolder(confs[0], entries);
+    { const t2 = Tombs.get()[p.code.slug];
+      if (t2 && t2 > (singleTs || 0)) { prog.remove(); render(); flash(`${p.code.emoji} ${p.code.name} was deleted here — not re-importing (newer delete wins)`); return; }
+      if (t2) Tombs.clear(p.code.slug); }
     const ex = Profiles.list.find(x => x.code && x.code.slug === p.code.slug);
     if (ex) { p.id = ex.id; Profiles.list[Profiles.list.indexOf(ex)] = p; }
     else Profiles.list.push(p);
@@ -1573,6 +1664,9 @@ async function importClinic(confs, entries, prog) {
   for (const conf of confs) {
     try {
       const { p, ts } = await parseClientFolder(conf, entries);
+      const tomb = Tombs.get()[p.code.slug];
+      if (tomb && tomb > (ts || 0)) { kept++; continue; } // deleted here more recently — stays deleted
+      if (tomb) Tombs.clear(p.code.slug); // the clinic knowingly re-created them
       const ex = Profiles.list.find(x => x.code && x.code.slug === p.code.slug);
       if (ex && (ex.ts || 0) > (ts || 0)) { kept++; continue; } // this computer has newer work — keep it
       p.ts = ts || Date.now();
@@ -1671,12 +1765,20 @@ function openFeedback() {
   document.body.appendChild(scrim);
 }
 const CHANGELOG = [
+  { v: '1.10x', items: [
+    'Codes start truly untouched — tap an animal to claim it (name + emoji together); taken animals lock; changes need a yes',
+    'Authors are presets now: fill role + color once and it saves itself; hold a preset to delete it (clients keep their stamp)',
+    'Deletes are FINAL: tombstones ride every save — nothing resurrects on pull, and tablets get told instead of surprised',
+    'First open = one step: scan the paper setup card (or paste the key) → the caseload arrives on its own',
+    'Sidebar reorganized: one split Import|Export control, matched names, tidy groups',
+    'Library grown up: label + tab required to publish, typed confirm to remove, added-by stamps, duplicate-proof (same name + same picture), colleagues’ additions merge instead of vanishing',
+  ] },
   { v: '1.09x', items: [
     'Two-minute setup wizard: your name, your color, paste one key — building',
     'Save to clinic replaces exporting — the bar shows saved/unsaved, the zip moved to Advanced (hand-offs only)',
     'New clients start truly blank: their code, their creation — nothing prefilled',
     '🖼 Clinic library: shared pictures every tablet gets preloaded, organized into picker tabs, tagged for search',
-    'Pull latest: colleagues’ saves and the library flow back into this app',
+    'Connecting on a new computer pulls the clinic’s existing work in automatically',
     'Removing a client is a typed, deliberate process — and tablets follow on the next save',
     'Key-expiry watch: from ~11 months, a daily reminder until fresh keys are saved',
     'Guide: real legality & ethics section + the ownership-transfer process, step by step',
@@ -1863,47 +1965,47 @@ function openSetupWizard() {
   const scrim = el('div', 'scrim');
   const m = el('div', 'modal'); m.style.width = 'min(480px,96vw)';
   scrim.appendChild(m); document.body.appendChild(scrim);
-  const doneAll = () => { try { LS.setItem('rbts.setupDone', '1'); } catch {} scrim.remove(); render(); };
-  const step1 = () => {
-    m.innerHTML = `<h2>Welcome 👋</h2>
-      <p style="font-weight:600;color:var(--ink);line-height:1.6;font-size:14px">Two quick things and you're building. <b>Step 1 of 2:</b> who are you?</p>`;
-    const nIn = el('input', 'tin'); nIn.placeholder = 'e.g. BCBA, Intern, Ms. R'; nIn.maxLength = 24;
-    const dots = el('div', 'code-pick'); dots.style.marginTop = '10px';
-    let myColor = null;
-    CODE_COLORS.forEach(c2 => { const b = el('button', ''); b.style.background = c2.hex; b.title = c2.name;
-      b.onclick = () => { myColor = c2.hex; $$('button', dots).forEach(x => { x.classList.remove('on'); x.textContent = ''; }); b.classList.add('on'); b.textContent = '✓'; b.style.color = '#fff'; };
-      dots.appendChild(b); });
-    m.append(el('div', 'label', 'Your name or role'), nIn, el('div', 'label', 'Your color (marks your cases)'), dots);
-    const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:16px';
-    const next = el('button', 'btn btn-primary', 'Next →');
-    next.onclick = () => { const n = nIn.value.trim(); if (!n) { flash('Type your name or role'); return; }
-      try { LS.setItem('rbts.me', n); } catch {}
-      if (myColor) Authors.set(n, myColor);
-      step2(); };
-    r.appendChild(next); m.appendChild(r);
-    setTimeout(() => nIn.focus(), 80);
+  let stopCam = null;
+  const doneAll = () => { if (stopCam) stopCam(); try { LS.setItem('rbts.setupDone', '1'); } catch {} scrim.remove(); render(); };
+  m.innerHTML = `<h2>Connect to your clinic 🔗</h2>
+    <p style="font-weight:600;color:var(--ink);line-height:1.6;font-size:14px">One thing and you're in: the clinic's <b>write key</b>. It links this computer to the caseload — everything already saved arrives on its own. Scan the lead card, or paste the key.</p>
+    <div id="wzCam"></div>`;
+  const tIn = el('input', 'tin'); tIn.type = 'password'; tIn.placeholder = 'paste the write key (or scan above)';
+  m.appendChild(tIn);
+  const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:16px;gap:8px';
+  const skip = el('button', 'btn btn-ghost', 'Work offline for now'); skip.onclick = doneAll;
+  const go = el('button', 'btn btn-primary', 'Connect ✓');
+  const connectWith = async (raw) => {
+    let repo = (PubCfg.get() || {}).repo || 'RBT-Tools-and-stuffs/rbt-clinic-data', tok = String(raw || '').trim();
+    const mW = tok.match(/^rbtsw1\|([\w.-]+\/[\w.-]+)\|(.+)$/);
+    if (mW) { repo = mW[1]; tok = mW[2]; }
+    if (!tok) { flash('Paste or scan the key, or work offline'); return; }
+    PubCfg.set({ repo, token: tok });
+    flash('Connected — pulling the clinic\u2019s work…');
+    doneAll();
+    try { await pullFromClinic(); } catch {}
   };
-  const step2 = () => {
-    m.innerHTML = `<h2>Connect the clinic 🔗</h2>
-      <p style="font-weight:600;color:var(--ink);line-height:1.6;font-size:14px"><b>Step 2 of 2.</b> If your clinic lead gave you a key, paste it — everything you build then reaches the tablets with one Save. No key yet? Skip; the app works fully on this computer.</p>`;
-    const tIn = el('input', 'tin'); tIn.type = 'password'; tIn.placeholder = 'paste the write key (github_pat_…)';
-    m.append(tIn);
-    const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:16px;gap:8px';
-    const skip = el('button', 'btn btn-ghost', 'Skip for now'); skip.onclick = doneAll;
-    const go = el('button', 'btn btn-primary', 'Connect ✓');
-    go.onclick = async () => {
-      const tok = tIn.value.trim(); if (!tok) { flash('Paste the key, or Skip'); return; }
-      PubCfg.set({ repo: (PubCfg.get() || {}).repo || 'RBT-Tools-and-stuffs/rbt-clinic-data', token: tok });
+  go.onclick = () => connectWith(tIn.value);
+  r.append(skip, go); m.appendChild(r);
+  if ('BarcodeDetector' in window && navigator.mediaDevices) {
+    const camB = el('button', 'btn btn-sm btn-ghost', '📷 Scan the setup card'); camB.style.margin = '4px 0 10px';
+    camB.onclick = async () => {
       try {
-        const c = PubCfg.get();
-        const r2 = await fetch(`https://api.github.com/repos/${c.repo}`, { headers: { 'Authorization': 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28' } });
-        flash(r2.ok ? 'Connected ✓' : 'Saved — couldn’t verify yet (check Security & sync later)');
-      } catch { flash('Saved — will verify when online'); }
-      doneAll();
+        const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stopCam = () => { try { stream.getTracks().forEach(t2 => t2.stop()); } catch {} stopCam = null; };
+        camB.remove();
+        const vid = el('video'); vid.playsInline = true; vid.muted = true; vid.srcObject = stream;
+        vid.style.cssText = 'width:100%;border-radius:12px;margin:4px 0 10px';
+        $('#wzCam', m).appendChild(vid); await vid.play();
+        const loop = async () => { if (!vid.isConnected || !stopCam) return;
+          try { const codes = await det.detect(vid); if (codes.length) { const v = codes[0].rawValue; stopCam(); connectWith(v); return; } } catch {}
+          setTimeout(loop, 350); };
+        loop();
+      } catch { flash('No camera — paste the key instead'); }
     };
-    r.append(skip, go); m.appendChild(r);
-  };
-  step1();
+    $('#wzCam', m).appendChild(camB);
+  }
 }
 function firstRunAck() {
   try { if (LS.getItem('rbts.ack')) return; } catch {}
@@ -2153,18 +2255,25 @@ async function publishClinic() {
     const prog = el('div', 'flash', 'Publishing to the clinic repo…'); document.body.appendChild(prog);
     try {
       const files = [], used = new Set();
-      const manifest = { app: 'rbt-tools', kind: 'clinic', version: APP_VERSION, exported: Date.now(), profiles: [] };
+      const tombs = Tombs.get();
+      Object.entries(tombs).forEach(([s, ts]) => { if (Date.now() - ts > 400 * 864e5) delete tombs[s]; });
+      Tombs.set(tombs);
+      const manifest = { app: 'rbt-tools', kind: 'clinic', version: APP_VERSION, exported: Date.now(), profiles: [], deleted: tombs };
       for (const p of ready) { const j = await buildProfileFiles(p, files, used); manifest.profiles.push({ slug: p.code.slug, name: p.code.name, ts: j.ts }); }
       files.push({ path: 'clinic.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
       /* the shared CLINIC LIBRARY rides inside the same zip */
-      const lib = ClinicVis.list();
+      const lib = ClinicVis.list().filter(cv => (cv.label || '').trim() && cv.cat);
+      const libSkipped = ClinicVis.list().length - lib.length;
+      if (libSkipped) flash(`${libSkipped} library picture${libSkipped === 1 ? '' : 's'} skipped — missing label or tab`);
       {
-        const items = [];
+        const items = []; const seen = new Set();
         for (const cv of lib) {
+          const key = (cv.label || '').toLowerCase() + '|' + (cv.h || cv.img);
+          if (seen.has(key)) continue; seen.add(key); // same name + same picture = one copy
           const rec = await SDB.get(cv.img); if (!rec) continue;
           const path = `Clinic Library/${safeName(cv.label, 'picture')}-${cv.img}.jpg`;
           files.push({ path, data: new Uint8Array(await rec.blob.arrayBuffer()) });
-          items.push({ path, label: cv.label, cat: cv.cat, tags: cv.tags || [] });
+          items.push({ path, label: cv.label, cat: cv.cat, tags: cv.tags || [], h: cv.h, by: cv.by });
         }
         if (items.length) files.push({ path: 'library.json', data: new TextEncoder().encode(JSON.stringify({ ts: ClinicVis.ts(), items }, null, 2)) });
       }
@@ -2206,20 +2315,31 @@ function openClinicLibrary() {
   m.innerHTML = `<h2>🖼 Clinic library</h2>
     <p style="color:var(--muted);font-weight:700;font-size:12.5px;margin:-4px 0 12px">Pictures every client's tablet gets preloaded. Organize them into the picker's tabs, tag them for search. Publishes with <b>Save to clinic</b>; shared with every Client Profiles instance.</p>`;
   const list = el('div', 'row'); list.style.cssText = 'gap:14px;align-items:flex-start';
+  const hashBlob = async (id, g) => { try { const rec = await SDB.get(id); if (!rec) return;
+    const hb = await crypto.subtle.digest('SHA-256', await rec.blob.arrayBuffer());
+    g.h = [...new Uint8Array(hb)].slice(0, 12).map(x => x.toString(16).padStart(2, '0')).join(''); ClinicVis.save(); } catch {} };
   const draw = () => {
     list.innerHTML = '';
     ClinicVis.items.forEach((g, i) => {
       const f = el('div', 'field');
-      f.appendChild(mkSlot(() => g.img, (id, name) => { g.img = id; if (!g.label && name) g.label = cleanName(name); ClinicVis.save(); }, {}));
-      const li = el('input', 'tin'); li.placeholder = 'Label'; li.maxLength = 24; li.value = g.label || ''; li.style.width = '118px';
+      const ready = g.img && (g.label || '').trim() && g.cat;
+      f.appendChild(mkSlot(() => g.img, (id, name) => { g.img = id; if (!g.label && name) g.label = cleanName(name); g.by = g.by || LS.getItem('rbts.me') || 'BCBA'; hashBlob(id, g); ClinicVis.save(); draw(); }, {}));
+      if (!ready) f.appendChild(el('span', 'sub', '⚠ needs a picture, label & tab — won’t publish until it has all three'));
+      const li = el('input', 'tin'); li.placeholder = 'Label (required)'; li.maxLength = 24; li.value = g.label || ''; li.style.width = '118px';
       li.oninput = () => { g.label = li.value; ClinicVis.save(); };
       f.appendChild(li);
       f.appendChild(mkSeg([['places', 'Place'], ['activities', 'Activity'], ['rewards', 'Reward'], ['people', 'People']], g.cat, v => { g.cat = v; ClinicVis.save(); }));
       const ti = el('input', 'tin'); ti.placeholder = 'tags, comma,separated'; ti.maxLength = 80; ti.value = (g.tags || []).join(', '); ti.style.cssText = 'width:118px;font-size:11.5px';
       ti.oninput = () => { g.tags = ti.value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8); ClinicVis.save(); };
       f.appendChild(ti);
-      const rm = el('button', 'btn btn-sm btn-ghost', 'Remove');
-      rm.onclick = () => { ClinicVis.items.splice(i, 1); ClinicVis.save(); gcImages(); draw(); };
+      if (g.by) f.appendChild(el('span', 'sub', `added by ${esc(g.by)}`));
+      const rm = el('button', 'btn btn-sm btn-ghost', 'Remove…');
+      rm.onclick = () => { /* removal takes effort: type the label */
+        const want = (g.label || 'REMOVE').trim();
+        const typed = prompt(`Remove “${want}” from every tablet on the next save?\nType the label to confirm:`);
+        if (typed && typed.trim().toLowerCase() === want.toLowerCase()) { ClinicVis.items.splice(i, 1); ClinicVis.save(); gcImages(); draw(); }
+        else if (typed != null) flash('Label didn’t match — kept');
+      };
       f.appendChild(rm);
       list.appendChild(f);
     });
@@ -2238,7 +2358,10 @@ function openClinicLibrary() {
     binp.value = ''; if (!imgs.length) return flash('No pictures in that folder.');
     const prog = el('div', 'flash', `Adding ${imgs.length}…`); document.body.appendChild(prog);
     try { for (const f2 of imgs) { const blob = await processImage(f2); const id = await storeImage(blob);
-      ClinicVis.items.push({ img: id, label: cleanName(f2.name.replace(/\.[^.]+$/, '')), cat: 'activities', tags: [] }); }
+      const g = { img: id, label: cleanName(f2.name.replace(/\.[^.]+$/, '')), cat: 'activities', tags: [], by: LS.getItem('rbts.me') || 'BCBA' };
+      try { const hb = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+        g.h = [...new Uint8Array(hb)].slice(0, 12).map(x => x.toString(16).padStart(2, '0')).join(''); } catch {}
+      ClinicVis.items.push(g); }
       ClinicVis.save(); draw(); } finally { prog.remove(); }
   };
   m.append(bulk, binp);
@@ -2249,18 +2372,17 @@ function openClinicLibrary() {
   document.body.appendChild(scrim);
 }
 /* the office card: scan → tablet joins. Print it, drawer it, done. */
-function printOfficeCard(code) {
+function printOfficeCard(code, opts = {}) {
   $$('.qr-print').forEach(n => n.remove());
   const card = el('div', 'qr-print');
+  const steps = opts.lead
+    ? `<li>Open Client Profiles on your computer</li><li>On the welcome screen, choose <b>Scan the setup card</b></li><li>Done — the caseload arrives on its own</li>`
+    : `<li>Open RBT Tools on the tablet</li><li>Enter the PIN</li><li>Settings → <b>Join clinic sync</b> → <b>Scan</b> this card</li>`;
   card.innerHTML = `<div style="max-width:400px;margin:0 auto;padding:28px;border:2px dashed #999;border-radius:16px;text-align:center;font-family:var(--body)">
-    <h2 style="font-family:var(--display);margin:0 0 4px">RBT Tools — Clinic Sync</h2>
-    <p style="font-weight:700;color:#555;margin:0 0 14px;font-size:13px">Scan with the tablet · keep this card in the office</p>
+    <h2 style="font-family:var(--display);margin:0 0 4px">${opts.lead ? 'Client Profiles — SETUP card' : 'RBT Tools — Clinic Sync'}</h2>
+    <p style="font-weight:700;color:${opts.lead ? '#9a3b30' : '#555'};margin:0 0 14px;font-size:13px">${opts.lead ? 'BCBA/Intern setup · WRITE access — staff only, locked drawer' : 'Scan with the tablet · keep this card in the office'}</p>
     <canvas id="qrPrintCv" style="width:240px;height:240px;image-rendering:pixelated"></canvas>
-    <ol style="text-align:left;font-size:13px;font-weight:600;line-height:1.6;margin:14px 0 0;padding-left:20px">
-      <li>Open RBT Tools on the tablet</li>
-      <li>Enter the PIN</li>
-      <li>Settings → <b>Join clinic sync</b> → <b>Scan</b> this card</li>
-    </ol>
+    <ol style="text-align:left;font-size:13px;font-weight:600;line-height:1.6;margin:14px 0 0;padding-left:20px">${steps}</ol>
     <p style="font-size:10px;color:#888;margin:12px 0 0;word-break:break-all">${esc(code)}</p>
   </div>`;
   document.body.appendChild(card);
@@ -2326,9 +2448,7 @@ function openSecurity() {
   fPin.appendChild(pinRow);
   const pubB = el('button', 'btn btn-primary', '💾 Save to clinic now'); pubB.style.marginTop = '14px';
   pubB.onclick = publishClinic;
-  const pullB = el('button', 'btn btn-ghost btn-sm', '⭳ Pull latest'); pullB.style.cssText = 'margin-top:14px;margin-left:8px';
-  pullB.title = 'Fetch colleagues’ latest saves + the clinic library into this app';
-  pullB.onclick = pullFromClinic;
+  /* (no manual Pull button — the wizard pulls on first connect, and saves flow one way) */
   const div1 = el('div'); div1.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
   const f3 = el('div', 'field');
   f3.appendChild(el('span', 'label', 'Office card — paste the tablet key (read-only), then print'));
@@ -2343,12 +2463,16 @@ function openSecurity() {
       if (drawQR(cv, outBox.value, 4)) qrHold.appendChild(cv);
     }
   };
+  const leadB = el('button', 'btn btn-sm btn-ghost', '🖨 Print setup card — BCBA/Intern (key lives on paper, not on devices)');
+  leadB.style.marginTop = '8px';
+  leadB.onclick = () => { const c2 = PubCfg.get(); if (!c2) { flash('Save the connection first'); return; }
+    printOfficeCard(`rbtsw1|${c2.repo}|${c2.token}`, { lead: true }); };
   const cpB = el('button', 'btn btn-sm btn-ghost', 'Copy code');
   cpB.onclick = async () => { if (!outBox.value) return; try { await navigator.clipboard.writeText(outBox.value); flash('Copied'); } catch { flash('Copy blocked'); } };
   const prB = el('button', 'btn btn-sm btn-primary', '🖨 Print office card');
   prB.onclick = () => { if (!outBox.value) { flash('Paste the read-only token first'); return; } printOfficeCard(outBox.value); };
   const btnRow = el('div', 'row'); btnRow.style.marginTop = '8px'; btnRow.append(cpB, prB);
-  f3.append(roIn, outBox, qrHold, btnRow);
+  f3.append(roIn, outBox, qrHold, btnRow, leadB);
   const div2 = el('div'); div2.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
   const vRow = el('div', 'row');
   const vB = el('button', 'btn btn-sm ' + (Vault.enabled() ? 'btn-ghost' : 'btn-primary'), Vault.enabled() ? '🔒 Vault is ON — change passphrase' : '🔒 Encrypt caseload (set passphrase)');
@@ -2371,7 +2495,7 @@ function openSecurity() {
     };
     vRow.appendChild(vX);
   }
-  m.append(f1, f2, saveB, editB, testB, fPin, pubB, pullB, div1, f3, div2, vRow,
+  m.append(f1, f2, saveB, editB, testB, fPin, pubB, div1, f3, div2, vRow,
     el('p', '', '<span style="color:var(--muted);font-weight:700;font-size:12px">One-way by design: tablets read, only this app writes. Images in the local library are not yet encrypted — the vault covers the caseload database.</span>'));
   const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '12px';
   const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
@@ -2392,7 +2516,7 @@ function openSecurity() {
   setInterval(checkTokenAge, 6 * 3600 * 1000);
   $('#newBtn').onclick = newProfile;
   $('#importBtn').onclick = () => $('#importInp').click();
-  const cb = $('#clinicBtn'); if (cb) cb.onclick = exportClinic;
+  const cb = $('#exportBtn'); if (cb) cb.onclick = exportClinic;
   const nb = $('#newsBtn'); if (nb) nb.onclick = openWhatsNew;
   const fbB = $('#fbBtn'); if (fbB) fbB.onclick = openFeedback;
   const sb2 = $('#secBtn'); if (sb2) sb2.onclick = openSecurity;
