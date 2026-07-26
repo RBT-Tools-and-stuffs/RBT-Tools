@@ -225,15 +225,16 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
 <div id="app">
   <aside id="side">
     <div class="side-head">
-      <h1>Client Profiles <span class="vbadge">1.03</span></h1>
+      <h1>Client Profiles <span class="vbadge" id="verBadge">1.05</span></h1>
     </div>
     <div class="side-list" id="plist"></div>
     <div class="side-foot">
       <button class="btn btn-primary" id="newBtn"><svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg> New client</button>
       <button class="btn btn-ghost" id="importBtn">Import folder (.zip)</button>
       <button class="btn btn-ghost" id="clinicBtn" title="Every client, one zip — anyone who imports it gets the whole caseload at once">⬆ Export clinic file</button>
-      <a class="btn btn-ghost" style="text-decoration:none" href="https://tanner-portal.notion.site/2efc865936c382bea785815773d4e625?pvs=105" target="_blank" rel="noopener">Give feedback</a>
+      <button class="btn btn-ghost" id="fbBtn">Give feedback</button>
       <button class="btn btn-ghost btn-sm" id="newsBtn">What's new</button>
+      <button class="btn btn-ghost btn-sm" id="baaBtn" title="A one-page case for management: privacy posture, BAA triggers, costs">BAA brief</button>
       <input type="file" id="importInp" accept=".zip,application/zip,application/x-zip-compressed" class="hidden">
       <div class="side-note">Stays on this computer until you export. Client codes only — no PHI.</div>
     </div>
@@ -249,8 +250,8 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
    RBT TOOLS SETUP · 1.0 — profiles → client folders
    Multiple presets per tool · client.json fidelity · previews
    ============================================================ */
-const APP_VERSION = 8; // shown to people as "1.03"
-const APP_VERSION_LABEL = '1.03';
+const APP_VERSION = 10; // shown to people as "1.05"
+const APP_VERSION_LABEL = '1.05';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -511,8 +512,9 @@ function mkSeg(opts, val, onPick) {
   return seg;
 }
 function todayStr() { const d = new Date(); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${d.getFullYear()}`; }
-function folderName(p) { return `${p.code.name} — Updated ${todayStr()} by ${(p.updatedBy || 'BCBA').trim()}`; }
-function refreshExportName() { const n = $('#exportName'); const p = Profiles.active(); if (n && p) n.innerHTML = `Exports as <b>${esc(folderName(p))}.zip</b>. Pairs with RBT Tools <b>1.03</b>.`; }
+/* "updated by" is free text — scrub anything a filesystem or zip path would choke on */
+function folderName(p) { const by = (p.updatedBy || 'BCBA').trim().replace(/[\\/:*?"<>|#%{}]+/g, ' ').replace(/\s+/g, ' ').trim() || 'BCBA'; return `${p.code.name} — Updated ${todayStr()} by ${by}`; }
+function refreshExportName() { const n = $('#exportName'); const p = Profiles.active(); if (n && p) n.innerHTML = `Exports as <b>${esc(folderName(p))}.zip</b>. Pairs with RBT Tools <b>${APP_VERSION_LABEL}</b>.`; }
 
 function render() {
   drawSidebar();
@@ -610,7 +612,7 @@ function render() {
     cL.appendChild(el('div', 'sub', 'Notes appear on that tool\'s setup screen. Limits are enforced on the tablet; blank = no limit.'));
     const LIM_UI = {
       choice: { kind: 'count', label: 'choices on the board', lo: 2, hi: 16 },
-      token:  { kind: 'count', label: 'tokens', lo: 1, hi: 10 },
+      token:  { kind: 'count', label: 'tokens', lo: 1, hi: 30 },
       sched:  { kind: 'count', label: 'scheduled activities', lo: 1, hi: 30 },
       wait:   { kind: 'dur', label: 'longest wait' },
       timer:  { kind: 'dur', label: 'longest timer' },
@@ -823,8 +825,14 @@ const PRESET_UI = {
   token(pr) {
     const w = el('div');
     const r = el('div', 'row'); r.style.gap = '20px';
-    const f1 = el('div', 'field'); f1.appendChild(el('span', 'label', 'Tokens to earn'));
-    f1.appendChild(mkSeg([[1,'1'],[2,'2'],[3,'3'],[4,'4'],[5,'5'],[6,'6'],[8,'8'],[10,'10']], pr.count, v => { pr.count = +v; markDirty(); }));
+    const f1 = el('div', 'field'); f1.appendChild(el('span', 'label', 'Tokens to earn (chips or custom, 1–30)'));
+    const cIn = el('input', 'tin tin-s'); cIn.type = 'number'; cIn.min = 1; cIn.max = 30;
+    const seg = mkSeg([[1,'1'],[2,'2'],[3,'3'],[4,'4'],[5,'5'],[6,'6'],[8,'8'],[10,'10']], pr.count, v => { pr.count = +v; cIn.value = pr.count; markDirty(); });
+    const segRow2 = el('div', 'row'); segRow2.append(seg, cIn);
+    cIn.value = pr.count;
+    cIn.oninput = () => { const v = clamp(Math.round(+cIn.value || 1), 1, 30); pr.count = v;
+      $$('button', seg).forEach(b => b.classList.toggle('on', +b.textContent === v)); markDirty(); };
+    f1.appendChild(segRow2);
     const f2 = el('div', 'field'); f2.appendChild(el('span', 'label', 'Token symbol'));
     const te = el('input', 'tin tin-s'); te.maxLength = 4; te.value = pr.theme; te.style.fontSize = '22px'; te.style.textAlign = 'center';
     te.oninput = () => { pr.theme = te.value || '⭐'; markDirty(); };
@@ -1179,6 +1187,7 @@ async function unzipAll(buf) {
     const name = td.decode(u8.subarray(off + 46, off + 46 + nameLen));
     off += 46 + nameLen + extraLen + comLen;
     if (name.endsWith('/')) continue;
+    if (compSize > 60 * 1024 * 1024) continue; // safety valve — same as the tablet app
     const lNameLen = dv.getUint16(localOff + 26, true), lExtraLen = dv.getUint16(localOff + 28, true);
     const start = localOff + 30 + lNameLen + lExtraLen;
     const raw = u8.subarray(start, start + compSize);
@@ -1402,7 +1411,7 @@ async function parseClientFolder(jconf, entries) {
     const P = j.presets || {};
     for (const pr of (P.timer || [])) { const v = await VV(pr.visual); p.presets.timer.push({ ...PF.timer(), name: pr.name || '', m: pr.m ?? 5, s: pr.s ?? 0, moreS: pr.moreS || 60, style: pr.style || 'pie', showNum: pr.showNum !== false, img: v.img, imgLabel: v.label }); }
     for (const pr of (P.wait || [])) { const v = await VV(pr.reward); p.presets.wait.push({ ...PF.wait(), name: pr.name || '', m: pr.m ?? 0, s: pr.s ?? 30, style: pr.style || 'pie', showNum: pr.showNum !== false, img: v.img, imgLabel: v.label }); }
-    for (const pr of (P.token || [])) { const v = await VV(pr.reward); p.presets.token.push({ ...PF.token(), name: pr.name || '', count: pr.count || 5, theme: pr.theme || '⭐', img: v.img, imgLabel: v.label }); }
+    for (const pr of (P.token || [])) { const v = await VV(pr.reward); p.presets.token.push({ ...PF.token(), name: pr.name || '', count: clamp(+pr.count || 5, 1, 30), theme: pr.theme || '⭐', img: v.img, imgLabel: v.label }); }
     for (const pr of (P.ft || [])) { const s0 = await VV(pr.first), s1 = await VV(pr.then), s2 = await VV(pr.third);
       p.presets.ft.push({ name: pr.name || '', useThird: !!pr.useThird, slots: [{ img: s0.img, label: s0.label }, { img: s1.img, label: s1.label }, { img: s2.img, label: s2.label }] }); }
     for (const pr of (P.choice || [])) { const options = []; for (const o of (pr.options || []).slice(0, 16)) { const v = await VV(o); options.push({ img: v.img, label: v.label }); }
@@ -1420,27 +1429,109 @@ async function parseClientFolder(jconf, entries) {
     return { p, ts: j.ts || 0 };
 }
 
+const FEEDBACK_URL = 'https://tanner-portal.notion.site/2efc865936c382bea785815773d4e625?pvs=105';
+/* feedback: a conversation beats a form — the form is for the rest */
+function openFeedback() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal', `<h2>Feedback</h2>
+    <div style="font-weight:600;line-height:1.6;color:var(--ink)">
+    <p><b>Say it in person first.</b> Grab Tanner and show him — a quick conversation beats any form, and it usually gets fixed faster.</p>
+    <p>Use the form when it needs detail or a screenshot, or he isn't around.</p></div>`);
+  const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '16px';
+  const no = el('button', 'btn btn-ghost', 'Done'); no.onclick = () => scrim.remove();
+  const go = el('button', 'btn btn-primary', 'Open the form');
+  go.onclick = () => { try { window.open(FEEDBACK_URL, '_blank'); } catch {} scrim.remove(); };
+  r.append(no, go); m.appendChild(r); scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
 const CHANGELOG = [
+  { v: '1.05', items: [
+    'Feedback: in-person first — the form is the backup',
+    'Export folder name scrubs characters that break file paths',
+    'Version badge keeps itself current',
+  ] },
+  { v: '1.04', items: [
+    'BAA brief added (sidebar) — a one-page case for management',
+    'Token presets: custom counts, 1–30',
+    'Token limits: max raised to 30',
+    'Changelog rewritten: facts only',
+  ] },
   { v: '1.03', items: [
-    'Client codes are protected — changing one is a confirmed, deliberate act in Advanced',
-    'Advanced card tucks away the rarely-touched settings',
-    'Far less text — the app trusts you to know your job',
-    'New matching app icons',
+    'Code changes require confirmation, moved to Advanced',
+    'Advanced card added',
+    'Shorter wording throughout',
+    'New app icons',
   ] },
   { v: '1.02', items: [
-    'Renamed: this is now the Client Profiles app',
-    'Clinic file — export EVERY client as one zip; an RBT imports it once and their whole caseload updates',
-    'Importing a clinic file merges: for each client, the newer version wins (great for sharing between BCBAs/interns)',
-    'Client Visuals: add a whole folder of pictures in one go',
-    'Limits show a live plain-English summary and can never be impossible',
+    'Renamed to Client Profiles',
+    'Clinic file: export/import every client as one zip; newer version of each client wins on merge',
+    'Bulk-add a folder of pictures',
+    'Limits show a plain-English summary; impossible ranges auto-correct',
   ] },
   { v: '1.01', items: [
-    'Color-animal client codes — a zero-PHI identity system',
-    'Built-in picture library on every image slot (shares the tablet\'s visuals.js)',
-    'Session-settings and quick-tags cards removed',
-    'Orphaned pictures cleaned up automatically',
+    'Color-animal client codes (no PHI)',
+    'Built-in picture library on every image slot',
+    'Orphaned pictures garbage-collected',
   ] },
 ];
+/* ============================================================
+   BAA BRIEF — the one-pager for management. Facts, triggers, costs.
+   ============================================================ */
+const BAA_BRIEF = [
+  ['What these tools are', [
+    'Two free, static web pages: RBT Tools (tablet timers, schedules, token boards) and Client Profiles (this builder).',
+    'No accounts, no server, no database. Everything lives in the browser of the device using it; nothing is transmitted anywhere.',
+  ]],
+  ['Where PHI stands today', [
+    'The tools are built to run with zero PHI. Clients exist only as color-animal codes; names, photos of children, and other identifiers are barred by policy and flagged by built-in checks. The code↔child mapping stays in the clinic\'s existing records.',
+    'Clinical data collection stays in the clinic\'s system of record (e.g., CentralReach). These tools never hold session data.',
+    'De-identified information is not PHI under HIPAA. While the zero-PHI rule holds, no part of this workflow requires a BAA.',
+  ]],
+  ['What a BAA is — and what would trigger one', [
+    'A Business Associate Agreement is the HIPAA contract required when an outside service creates, receives, maintains, or transmits PHI on the clinic\'s behalf.',
+    'The current host (GitHub Pages) serves only the app code. It never receives client data — there is nothing to sign a BAA about under current use.',
+    'Trigger point: if client folders ever contain PHI (a real name, a child\'s photo), or if folders sync through a cloud service, that storage service is handling PHI and must be under a BAA.',
+  ]],
+  ['Options and realistic costs', [
+    'A — Keep zero-PHI, hand folders over directly (current practice). Cost: $0. Needs: staff adherence to the code system. BAA: none required.',
+    'B — Move folder sharing onto the clinic\'s existing BAA-covered platform (Google Workspace and Microsoft 365 business tiers include a BAA at no added cost). Cost: $0 marginal. Covers the "what if PHI slips in" risk and enables team syncing.',
+    'C — Dedicated HIPAA-grade hosting with accounts, authentication, and audit logs — only relevant if the tools ever store PHI or sync automatically. Typical cost: roughly $25–$300+ per month plus development time. Not needed for current functionality.',
+  ]],
+  ['Ethics alignment', [
+    'BACB Ethics Code 2.03 (protecting confidential information) and the HIPAA minimum-necessary principle: these tools carry the minimum possible — no identifiers at all.',
+    'The tools supplement prescribed programming. They never replace BCBA direction, supervision, or required data collection.',
+  ]],
+  ['Bottom line', [
+    'Current use: no BAA required, no budget required.',
+    'If team features are wanted (shared tablets, synced visuals), route files through the clinic\'s existing BAA-covered drive first. Purpose-built infrastructure is a later, separately costed decision.',
+    'This brief is not legal advice — confirm with the clinic\'s compliance officer.',
+  ]],
+];
+function openBaaBrief() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal'); m.style.width = 'min(640px,96vw)';
+  m.appendChild(el('h2', '', 'BAA brief — RBT Tools & Client Profiles'));
+  m.appendChild(el('p', '', `<span style="color:var(--muted);font-weight:700;font-size:12.5px">For clinic management · ${esc(todayStr().replace(/-/g, '/'))} · one page, facts only</span>`));
+  BAA_BRIEF.forEach(([h, items]) => {
+    const d = el('div'); d.style.margin = '0 0 12px';
+    d.appendChild(el('h2', '', `<span style="font-size:14.5px">${esc(h)}</span>`));
+    items.forEach(t => d.appendChild(el('p', '', `<span style="font-weight:600;font-size:13px;line-height:1.55;color:var(--ink)">· ${esc(t)}</span>`)));
+    m.appendChild(d);
+  });
+  const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '14px';
+  const cp = el('button', 'btn btn-ghost', 'Copy as text');
+  cp.onclick = async () => {
+    const txt = 'BAA BRIEF — RBT TOOLS & CLIENT PROFILES (' + todayStr().replace(/-/g, '/') + ')\n\n'
+      + BAA_BRIEF.map(([h, items]) => h.toUpperCase() + '\n' + items.map(t => '• ' + t).join('\n')).join('\n\n');
+    try { await navigator.clipboard.writeText(txt); flash('Copied — paste into an email or doc'); } catch { flash('Copy blocked in this browser'); }
+  };
+  const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
+  r.append(cp, ok); m.appendChild(r);
+  scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
 function openWhatsNew() {
   const scrim = el('div', 'scrim');
   const m = el('div', 'modal', `<h2>What's new</h2>` + CHANGELOG.map(rel =>
@@ -1489,6 +1580,9 @@ function firstRunAck() {
   $('#importBtn').onclick = () => $('#importInp').click();
   const cb = $('#clinicBtn'); if (cb) cb.onclick = exportClinic;
   const nb = $('#newsBtn'); if (nb) nb.onclick = openWhatsNew;
+  const bb = $('#baaBtn'); if (bb) bb.onclick = openBaaBrief;
+  const fbB = $('#fbBtn'); if (fbB) fbB.onclick = openFeedback;
+  const vb = $('#verBadge'); if (vb) vb.textContent = APP_VERSION_LABEL; // the badge can never drift again
   try {
     const seen = LS.getItem('rbts.seenVer');
     if (seen && seen !== APP_VERSION_LABEL) setTimeout(() => flash(`Updated to ${APP_VERSION_LABEL} — tap “What's new” below`), 800);
