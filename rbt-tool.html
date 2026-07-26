@@ -1246,11 +1246,12 @@ body.reduce-motion .magnify{transition:none !important}
 .sb-card .sb-mark{flex:0 0 auto;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
   background:var(--green-soft);color:var(--green);font-weight:900;font-size:15px}
 .sb-card .sb-mark.err{background:#F2CFC9;color:var(--reserve)}
-/* empty velcro spots waiting on the Done side */
-.sb-slot{border:2px dashed var(--line);border-radius:var(--r-card);min-height:clamp(64px,10vh,104px);
-  display:grid;place-items:center;opacity:.75;flex:0 0 auto}
-.sb-slot::before{content:"";width:26px;height:26px;border-radius:50%;
-  background:radial-gradient(circle at 40% 35%, var(--line), var(--surface-2) 72%);opacity:.8}
+/* empty Done spots are BLANK — space is reserved, nothing distracts (1.10) */
+.sb-slot{border:none;background:transparent;border-radius:var(--r-card);
+  min-height:clamp(64px,10vh,104px);flex:0 0 auto}
+.sb-slot.spent{opacity:0}
+/* the one exception: the ACTIVE row's landing spot glows softly so the child knows where the card goes */
+.sb-row:has(.sb-card.now) .sb-slot{background:var(--green-soft);box-shadow:inset 0 0 0 2px color-mix(in srgb, var(--green) 45%, transparent)}
 @keyframes sbNudge{0%,100%{transform:none}30%{transform:translateX(-6px) rotate(-.8deg)}65%{transform:translateX(6px) rotate(.8deg)}}
 .sb-card.nudge{animation:sbNudge .32s ease}
 body.reduce-motion .sb-card.nudge{animation:none}
@@ -1408,8 +1409,8 @@ const LS = (() => {
 })();
 
 /* ---------- settings ---------- */
-const APP_VERSION = 14; // pairs with Client Profiles 1.09x
-const APP_VERSION_LABEL = '1.09';
+const APP_VERSION = 15; // pairs with Client Profiles 1.10x
+const APP_VERSION_LABEL = '1.10';
 const DEFAULTS = {
   theme: 'standard', fun: true, sound: true, volume: 0.7, reduceMotion: false,
   endingSound: 'marimba', // marimba · bells · musicbox · off — always the extended, gentle ringer
@@ -5538,6 +5539,12 @@ function openPicker(onPick, opts = {}) {
     b.onclick = use; inp.onkeydown = e => { if (e.key === 'Enter') use(); };
     body.append(inp, b); setTimeout(() => inp.focus(), 50);
   }
+  /* a REAL way out at the bottom — no more hunting for the little ✕ */
+  const foot = el('div', 'modal-foot');
+  const doneB = el('button', 'btn ' + (opts.keepOpen ? 'btn-primary btn-lg' : 'btn-ghost'), opts.keepOpen ? 'Done ✓' : 'Cancel');
+  doneB.onclick = close;
+  foot.appendChild(doneB);
+  modal.appendChild(foot);
   render(); modalRoot().appendChild(scrim);
 }
 
@@ -5677,7 +5684,19 @@ function openProfileMenu() {
   const close = () => scrim.remove();
   $('.x-btn', modal).onclick = close; scrim.onclick = e => { if (e.target === scrim) close(); };
   const body = $('.modal-body', modal);
+  /* a clinic-removed profile: opening it asks the ONE question that matters */
+  const goneAsk = (c) => {
+    close();
+    confirmModal({
+      title: `${c.emoji} ${c.name} is no longer at this clinic`,
+      body: el('div', 'hint', 'The clinic removed this profile. Deleting clears their presets, pictures, and your notes about them from this tablet. You can also keep it a little longer — it will ask again.'),
+      confirmLabel: 'Delete from this tablet',
+      onConfirm: async () => { await removeClientEverywhere(c.slug); if (activeKey === 'home') show('home'); },
+    });
+  };
   const pick = (slug) => {
+    const cRec = slug && Clients.bySlug(slug);
+    if (cRec && cRec.gone) return goneAsk(cRec);
     if (slug === Profile.cur) { close(); return; }
     const doIt = () => { const r0 = slug && Clients.bySlug(slug); Profile.set(slug); close(); show('home'); flash(r0 ? `${r0.emoji} ${r0.name} active` : 'No client profile'); };
     /* a client switch is a session switch — running tools belong to the last kid */
@@ -5695,8 +5714,11 @@ function openProfileMenu() {
   Clients.list.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach(c => {
     const r2 = el('button', 'pm-row' + (Profile.cur === c.slug ? ' on' : ''));
     const toolNames = (c.prescribed || c.tools || []).map(k => TITLE[k]).filter(Boolean).join(', ');
-    r2.innerHTML = `<span class="pmono" style="background:${esc(c.color)};font-size:24px">${esc(c.emoji)}</span>
-      <span class="pt"><b>${esc(c.name)}</b><p>${esc(toolNames || 'all tools')}${c.updated ? ` · updated ${esc(c.updated)}${c.updatedBy ? ' by ' + esc(c.updatedBy) : ''}` : ''}</p></span>`;
+    r2.innerHTML = `<span class="pmono" style="background:${esc(c.color)};font-size:24px${c.gone ? ';filter:grayscale(1);opacity:.55' : ''}">${esc(c.emoji)}</span>
+      <span class="pt"><b>${esc(c.name)}</b><p>${c.gone
+        ? '<b style="color:#9a3b30">No longer at this clinic — tap to remove</b>'
+        : esc(toolNames || 'all tools') + (c.updated ? ` · updated ${esc(c.updated)}${c.updatedBy ? ' by ' + esc(c.updatedBy) : ''}` : '')}</p></span>`;
+    if (c.gone) r2.style.opacity = '.75';
     if (c.note) {
       const nb = el('button', 'cs-note pm-note', '<svg viewBox="0 0 24 24" class="ic"><path d="M5 4.5h11l3 3V19.5H5z"/><path d="M8.5 10h7M8.5 13.5h7M8.5 17h4"/></svg> Note');
       nb.onclick = (e) => { e.stopPropagation(); openClientNote(c); };
@@ -5860,7 +5882,7 @@ function openSettings() {
 function openJoinModal(after) {
   const scrim2 = el('div', 'modal-scrim'); const m2 = el('div', 'modal'); m2.style.maxWidth = '480px';
   m2.innerHTML = `<div class="modal-head"><h2>Join clinic sync</h2></div>
-    <div class="modal-body"><div class="hint" style="padding:0 0 10px">Scan the office card — or paste its code (or just the tablet token).</div>
+    <div class="modal-body"><div class="hint" style="padding:0 0 10px;text-align:left"><b>Why:</b> this code connects the tablet to your clinic’s client profiles — they arrive and stay current on their own. Get it from your BCBA or the office card. The tools work without it; profiles don’t.</div>
     <div id="scScanHold"></div>
     <input id="scIn" class="text-entry" style="font-size:15px" placeholder="rbts1|… or github_pat_…"></div>
     <div class="modal-foot"><button class="btn btn-ghost" id="scc">Cancel</button><button class="btn btn-primary" id="scy">Connect</button></div>`;
@@ -5953,6 +5975,12 @@ function openFeedback() {
    WHAT'S NEW — the update log, right in the app
    ============================================================ */
 const CHANGELOG = [
+  { v: '1.10', items: [
+    'The picture picker finally has a proper Done button (keepOpen) / Cancel — no more hunting the ✕',
+    'Clients removed by the clinic are never silently purged: they’re marked, and deleting is YOUR tap',
+    'The board’s Done side calmed down — only the active row’s landing spot lights up',
+    'Join screen explains WHY the code matters before asking for it',
+  ] },
   { v: '1.09', items: [
     'The code only appears when client profiles are on the tablet — and once entered, covers the whole day',
     'The gate now says who to ask (your BCBA/intern) and carries the 📖 Guide, readable before logging in',
@@ -6410,7 +6438,10 @@ const Sync = {
         if (libConf) {
           const lib = JSON.parse(new TextDecoder().decode(libConf.data));
           await Gallery.removeClient('_clinic'); // replace-all: the library IS the library
+          const seenLib = new Set(); // same name + same picture = one copy on the tablet
           for (const it of (lib.items || []).slice(0, 400)) {
+            const libKey = String(it.label || '').toLowerCase() + '|' + (it.h || it.path);
+            if (seenLib.has(libKey)) continue; seenLib.add(libKey);
             const e2 = entries.find(x => x.path === it.path);
             if (!e2) continue;
             const ext = extOf(e2.path); if (!IMG_EXT[ext]) continue;
@@ -6423,16 +6454,20 @@ const Sync = {
       } catch {}
       if (Array.isArray(sums)) {
         const ok = sums.filter(s => s && !s.error);
-        /* the published caseload IS the caseload — clients the clinic removed leave this tablet too
-           (only when every folder parsed cleanly; a bad read never deletes anything) */
-        let removed = 0;
+        /* clients the clinic removed get MARKED, never silently purged — the RBT sees
+           "no longer at this clinic" and chooses when to delete (notes go with it) */
+        let gone = 0;
         if (ok.length && ok.length === sums.length) {
           const keep = new Set(ok.map(s => s.slug));
-          for (const c of Clients.list.filter(x => !keep.has(x.slug))) { await removeClientEverywhere(c.slug); removed++; }
+          Clients.list.forEach(c => {
+            if (!keep.has(c.slug) && !c.gone) { c.gone = true; gone++; }
+            else if (keep.has(c.slug) && c.gone) delete c.gone; // clinic re-published them — welcome back
+          });
+          if (gone || Clients.list.some(c => c.gone !== undefined)) Clients.save();
         }
         syncProfileChip();
         if (activeKey === 'home') show('home');
-        flash(`Clinic sync ✓ ${ok.length} client${ok.length === 1 ? '' : 's'} current${removed ? ` · ${removed} removed` : ''}`);
+        flash(`Clinic sync ✓ ${ok.length} client${ok.length === 1 ? '' : 's'} current${gone ? ` · ${gone} removed by the clinic (see profiles)` : ''}`);
       }
       try { LS.setItem('rbt.syncSha', sha || ''); LS.setItem('rbt.syncAt', String(Date.now())); } catch {}
     } catch (e) { if (!quiet) flash('Sync failed: ' + ((e && e.message) || 'no connection')); }
