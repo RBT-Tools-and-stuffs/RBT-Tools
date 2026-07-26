@@ -188,6 +188,12 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
 
 .vbadge{display:inline-block;background:var(--primary-soft);color:var(--primary-deep);border-radius:8px;
   padding:2px 8px;font-weight:900;font-size:11px;letter-spacing:.06em;vertical-align:middle}
+/* laptop-first section nav: sticky pills that jump the long page */
+.cpnav{position:sticky;top:0;z-index:12;display:flex;gap:7px;flex-wrap:wrap;padding:10px 0;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);margin-bottom:6px}
+.cpnav button{padding:7px 15px;border-radius:999px;font-weight:800;font-size:12.5px;color:var(--muted);
+  background:var(--surface);border:1px solid var(--line);transition:background .15s,color .15s}
+.cpnav button:hover{color:var(--primary-deep);background:var(--primary-soft)}
 .ptool-row{display:flex;align-items:center;gap:14px;background:var(--bg);border:1px solid var(--line);
   border-radius:16px;padding:12px 16px;margin-bottom:9px}
 .ptool-row .tick2{width:8px;height:34px;border-radius:99px;background:var(--tool,var(--primary));opacity:.85;flex:0 0 auto}
@@ -203,6 +209,9 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
   display:inline-grid;place-items:center;flex:0 0 auto}
 .prev-btn:hover{background:var(--primary);color:#fff}
 .fx-canvas{position:fixed;inset:0;pointer-events:none;z-index:90}
+/* the office card owns the page while it exists — and owns the paper when printed */
+.qr-print{position:fixed;inset:0;background:#fff;z-index:95;overflow:auto;padding:40px 16px}
+@media print{ body > *:not(.qr-print){display:none !important} .qr-print{position:static;padding:0} .qr-print-bar{display:none !important} }
 .empty{max-width:560px;margin:60px auto;text-align:center}
 .empty h2{font-size:30px;color:var(--primary-deep);margin-bottom:10px}
 .empty p{color:var(--muted);font-weight:700;line-height:1.6}
@@ -234,7 +243,10 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
       <button class="btn btn-ghost" id="clinicBtn" title="Every client, one zip — anyone who imports it gets the whole caseload at once">⬆ Export clinic file</button>
       <button class="btn btn-ghost" id="fbBtn">Give feedback</button>
       <button class="btn btn-ghost btn-sm" id="newsBtn">What's new</button>
-      <button class="btn btn-ghost btn-sm" id="baaBtn" title="A one-page case for management: privacy posture, BAA triggers, costs">BAA brief</button>
+      <button class="btn btn-primary btn-sm" id="secBtn" title="Connect the clinic system, set the tablet code, print the office card">🔐 Security & sync</button>
+      <button class="btn btn-ghost btn-sm" id="libBtn" title="Shared pictures, preloaded on every tablet">🖼 Clinic library</button>
+      <button class="btn btn-ghost btn-sm" id="guideBtn">📖 Guide</button>
+      <div class="side-note hidden" id="tokWarn" style="color:#9a3b30;font-weight:800"></div>
       <input type="file" id="importInp" accept=".zip,application/zip,application/x-zip-compressed" class="hidden">
       <div class="side-note">Stays on this computer until you export. Client codes only — no PHI.</div>
     </div>
@@ -250,8 +262,8 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
    RBT TOOLS SETUP · 1.0 — profiles → client folders
    Multiple presets per tool · client.json fidelity · previews
    ============================================================ */
-const APP_VERSION = 10; // shown to people as "1.05"
-const APP_VERSION_LABEL = '1.05';
+const APP_VERSION = 14; // experimental build — pairs with RBT Tools 1.09
+const APP_VERSION_LABEL = '1.09x';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -291,8 +303,9 @@ const CODE_ANIMALS = [
   ['Tiger','🐯'], ['Puppy','🐶'], ['Kitten','🐱'], ['Robin','🐦'],
 ];
 function mkCode(ci, ai) {
+  /* code names are just the ANIMAL — the color is a look, not part of the name */
   const c = CODE_COLORS[ci], a = CODE_ANIMALS[ai];
-  return { name: `${c.name} ${a[0]}`, slug: `${c.name}-${a[0]}`.toLowerCase(), color: c.hex, emoji: a[1] };
+  return { name: a[0], slug: a[0].toLowerCase(), color: c.hex, emoji: a[1] };
 }
 function randomCode(excludeSlug) {
   const used = new Set(Profiles.list.map(p => p.code && p.code.slug).filter(Boolean));
@@ -316,19 +329,44 @@ function normCode(c) {
   };
 }
 
+/* ---------- authors: every BCBA/intern picks a color, their cases wear it ---------- */
+const Authors = {
+  map: {},
+  load() { try { this.map = JSON.parse(LS.getItem('rbts.authors') || '{}') || {}; } catch { this.map = {}; } },
+  save() { try { LS.setItem('rbts.authors', JSON.stringify(this.map)); } catch {} },
+  key(n) { return String(n || '').trim().toLowerCase(); },
+  color(n) { const c = this.map[this.key(n)]; return /^#[0-9a-fA-F]{6}$/.test(c || '') ? c : null; },
+  set(n, c) { const k = this.key(n); if (!k) return; this.map[k] = c; this.save(); },
+};
+
+/* ---------- the CLINIC LIBRARY — visuals every BCBA curates together.
+   Publishes with Save-to-clinic; lands preloaded in every tablet's picker;
+   travels between Client Profiles instances via the clinic file. ---------- */
+const ClinicVis = {
+  items: [],
+  load() { try { this.items = JSON.parse(LS.getItem('rbts.clinicVis') || '[]') || []; } catch { this.items = []; } },
+  save(touch) {
+    if (touch !== false) { try { LS.setItem('rbts.clinicVisTs', String(Date.now())); } catch {} }
+    try { LS.setItem('rbts.clinicVis', JSON.stringify(this.items)); } catch {}
+  },
+  list() { return this.items.filter(i => i.img); },
+  ts() { return +LS.getItem('rbts.clinicVisTs') || 0; },
+  setAll(arr, ts) { this.items = arr; this.save(false); try { LS.setItem('rbts.clinicVisTs', String(ts || Date.now())); } catch {} },
+};
+
 /* ---------- storage ---------- */
 const SDB = {
-  db: null,
+  db: null, mem: new Map(), // memory fallback: storage-blocked browsers still work for the session
   open() { return new Promise(res => { try {
     const r = indexedDB.open('rbt-setup', 1);
     r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains('imgs')) d.createObjectStore('imgs', { keyPath: 'id' }); };
     r.onsuccess = () => { SDB.db = r.result; res(); };
     r.onerror = () => res();
   } catch { res(); } }); },
-  put(rec) { return new Promise(res => { if (!SDB.db) return res(); const t = SDB.db.transaction('imgs', 'readwrite'); t.objectStore('imgs').put(rec); t.oncomplete = res; t.onerror = res; }); },
-  get(id) { return new Promise(res => { if (!SDB.db || !id) return res(null); const t = SDB.db.transaction('imgs', 'readonly'); const q = t.objectStore('imgs').get(id); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
-  keys() { return new Promise(res => { if (!SDB.db) return res([]); try { const t = SDB.db.transaction('imgs', 'readonly'); const q = t.objectStore('imgs').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); } catch { res([]); } }); },
-  del(id) { return new Promise(res => { if (!SDB.db) return res(); try { const t = SDB.db.transaction('imgs', 'readwrite'); t.objectStore('imgs').delete(id); t.oncomplete = res; t.onerror = res; } catch { res(); } }); },
+  put(rec) { return new Promise(res => { if (!SDB.db) { SDB.mem.set(rec.id, rec); return res(); } const t = SDB.db.transaction('imgs', 'readwrite'); t.objectStore('imgs').put(rec); t.oncomplete = res; t.onerror = res; }); },
+  get(id) { return new Promise(res => { if (!id) return res(null); if (!SDB.db) return res(SDB.mem.get(id) || null); const t = SDB.db.transaction('imgs', 'readonly'); const q = t.objectStore('imgs').get(id); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
+  keys() { return new Promise(res => { if (!SDB.db) return res([...SDB.mem.keys()]); try { const t = SDB.db.transaction('imgs', 'readonly'); const q = t.objectStore('imgs').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); } catch { res([]); } }); },
+  del(id) { return new Promise(res => { if (!SDB.db) { SDB.mem.delete(id); return res(); } try { const t = SDB.db.transaction('imgs', 'readwrite'); t.objectStore('imgs').delete(id); t.oncomplete = res; t.onerror = res; } catch { res(); } }); },
 };
 /* removed pictures don't haunt the browser: anything no profile references gets swept */
 async function gcImages() {
@@ -345,6 +383,7 @@ async function gcImages() {
       }));
       (p.gallery || []).forEach(g => take(g.img));
     });
+    (ClinicVis.items || []).forEach(g => take(g.img)); // the shared library's blobs are referenced too
     const keys = await SDB.keys();
     for (const k of keys) if (!refs.has(k)) { await SDB.del(k); const u = urlCache.get(k); if (u) { try { URL.revokeObjectURL(u); } catch {} urlCache.delete(k); } }
   } catch {}
@@ -400,9 +439,10 @@ const Profiles = {
   save() { try { LS.setItem('rbts.profiles', JSON.stringify(this.list)); if (this.activeId) LS.setItem('rbts.active', this.activeId); } catch {} },
   active() { return this.list.find(p => p.id === this.activeId) || null; },
   fresh() {
-    /* nothing preselected — every prescription is a deliberate choice.
-       The code is generated up front: zero PHI from the very first keystroke. */
-    return { id: uid(), code: randomCode(), updatedBy: '', note: '',
+    /* NOTHING prefilled — the code is theirs to create, not the app's to guess.
+       (A placeholder slug keeps the record valid until they name it.) */
+    return { id: uid(), code: { name: '', slug: 'unnamed-' + uid(), color: '#2E8B94', emoji: '' }, draft: true,
+      updatedBy: '', note: '',
       tools: [], limits: {}, toolNotes: {}, visualsOnly: false,
       gallery: [], presets: { timer: [], wait: [], token: [], ft: [], choice: [], turn: [], sched: [] }, ts: Date.now() };
   },
@@ -496,8 +536,10 @@ function drawSidebar() {
   Profiles.list.slice().sort((a, b) => a.code.name.localeCompare(b.code.name)).forEach(p => {
     const c = el('button', 'pcard' + (p.id === Profiles.activeId ? ' on' : ''));
     const nPresets = PRESETABLE.reduce((a, k) => a + (p.presets[k] ? p.presets[k].length : 0), 0);
+    const ac = Authors.color(p.updatedBy);
+    if (ac) c.style.boxShadow = `inset 5px 0 0 ${ac}` + (p.id === Profiles.activeId ? ', 0 0 0 3px var(--primary-soft)' : '');
     c.innerHTML = `<span class="mono" style="background:${esc(p.code.color)};font-size:22px">${esc(p.code.emoji)}</span>
-      <span class="pc-t"><b>${esc(p.code.name)}</b><p>${p.tools.length} tools · ${nPresets} preset${nPresets === 1 ? '' : 's'}</p></span>`;
+      <span class="pc-t"><b>${esc(p.code.name)}</b><p>${ac ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${esc(ac)};margin-right:4px"></span>` : ''}${esc((p.updatedBy || '').trim() || 'no author')} · ${p.tools.length} tools · ${nPresets} preset${nPresets === 1 ? '' : 's'}</p></span>`;
     c.onclick = () => { Profiles.activeId = p.id; Profiles.save(); render(); };
     list.appendChild(c);
   });
@@ -514,7 +556,17 @@ function mkSeg(opts, val, onPick) {
 function todayStr() { const d = new Date(); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${d.getFullYear()}`; }
 /* "updated by" is free text — scrub anything a filesystem or zip path would choke on */
 function folderName(p) { const by = (p.updatedBy || 'BCBA').trim().replace(/[\\/:*?"<>|#%{}]+/g, ' ').replace(/\s+/g, ' ').trim() || 'BCBA'; return `${p.code.name} — Updated ${todayStr()} by ${by}`; }
-function refreshExportName() { const n = $('#exportName'); const p = Profiles.active(); if (n && p) n.innerHTML = `Exports as <b>${esc(folderName(p))}.zip</b>. Pairs with RBT Tools <b>${APP_VERSION_LABEL}</b>.`; }
+function refreshExportName() { /* now a SAVE status line — the zip talk is gone */
+  const n = $('#exportName'); const p = Profiles.active(); if (!n || !p) return;
+  const pubAt = +LS.getItem('rbts.lastPublish') || 0;
+  const changedSince = (p.ts || 0) > pubAt;
+  n.innerHTML = !PubCfg.get()
+    ? `Not connected to the clinic yet — open <b>🔐 Security & sync</b> once.`
+    : pubAt
+      ? (changedSince ? `<b style="color:#9a5a2f">Unsaved changes</b> — Save to clinic to send them to the tablets.`
+        : `Saved to clinic ✓ ${new Date(pubAt).toLocaleDateString()} ${new Date(pubAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`)
+      : `Never saved to the clinic yet.`;
+}
 
 function render() {
   drawSidebar();
@@ -533,41 +585,144 @@ function render() {
   }
 
   const top = el('div', 'mtop');
-  top.appendChild(el('h2', '', `${esc(p.code.emoji)} ${esc(p.code.name)}`));
+  top.appendChild(el('h2', '', p.code.name ? `${esc(p.code.emoji)} ${esc(p.code.name)}` : 'New client — set their code'));
   const dup = el('button', 'btn btn-sm btn-ghost', 'Duplicate');
   dup.onclick = () => {
-    const cp = JSON.parse(JSON.stringify(p)); cp.id = uid(); cp.code = randomCode(); cp.ts = Date.now();
-    Profiles.list.push(cp); Profiles.activeId = cp.id; Profiles.save(); render(); flash(`Duplicated as ${cp.code.emoji} ${cp.code.name}`);
+    const cp = JSON.parse(JSON.stringify(p)); cp.id = uid(); cp.code = { name: '', slug: 'unnamed-' + uid(), color: p.code.color, emoji: '' }; cp.draft = true; cp.ts = Date.now();
+    Profiles.list.push(cp); Profiles.activeId = cp.id; Profiles.save(); render(); flash('Duplicated — give it its own code');
   };
+  /* removing a client is a PROCESS, not a slip: type the code to prove it */
   const delB = el('button', 'btn btn-sm btn-ghost', 'Delete');
-  delB.onclick = () => confirm2(`Delete ${p.code.name}?`, 'Removes it from this computer only — tablets keep what they imported.', () => {
-    Profiles.list = Profiles.list.filter(x => x.id !== p.id);
-    Profiles.activeId = Profiles.list[0] ? Profiles.list[0].id : null;
-    Profiles.save(); gcImages(); render();
-  });
+  delB.onclick = () => {
+    const word = (p.code.name || 'REMOVE').trim().split(/\s+/).pop();
+    const scrim = el('div', 'scrim');
+    const m = el('div', 'modal', `<h2>Remove ${esc(p.code.emoji)} ${esc(p.code.name || 'this client')}?</h2>
+      <p style="color:var(--muted);font-weight:700;font-size:13.5px;line-height:1.6">This deletes their profile, presets and pictures from this computer. On your next <b>Save to clinic</b>, they also leave every tablet. Type <b>${esc(word)}</b> to continue.</p>
+      <input class="tin" id="delConfirm" style="text-transform:uppercase" maxlength="14" placeholder="${esc(word)}">`);
+    const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:14px';
+    const no = el('button', 'btn btn-ghost', 'Cancel'); no.onclick = () => scrim.remove();
+    const yes = el('button', 'btn btn-danger', 'Remove client'); yes.disabled = true;
+    m.querySelector('#delConfirm').oninput = (e) => { yes.disabled = e.target.value.trim().toUpperCase() !== word.toUpperCase(); };
+    yes.onclick = () => {
+      scrim.remove();
+      Profiles.list = Profiles.list.filter(x => x.id !== p.id);
+      Profiles.activeId = Profiles.list[0] ? Profiles.list[0].id : null;
+      Profiles.save(); gcImages(); render();
+      flash('Removed here — remember to Save to clinic so tablets follow');
+    };
+    r.append(no, yes); m.appendChild(r); scrim.appendChild(m);
+    scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+    document.body.appendChild(scrim);
+  };
   top.append(dup, delB);
   root.appendChild(top);
 
-  /* the client code — display up top; changing it is a deliberate act, in Advanced */
-  const c1 = el('div', 'card');
+  /* jump-nav — built for laptops, harmless everywhere else */
+  const nav = el('div', 'cpnav');
+  [['sec-code', 'Code'], ['sec-note', 'Note'], ['sec-tools', 'Tools'], ['sec-presets', 'Presets'], ['sec-limits', 'Notes & limits'], ['sec-visuals', 'Visuals'], ['sec-adv', 'Advanced'], ['sec-check', 'Checklist']].forEach(([id2, lab]) => {
+    const b = el('button', '', lab);
+    b.onclick = () => { const t2 = $('#' + id2); if (t2) t2.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    nav.appendChild(b);
+  });
+  root.appendChild(nav);
+
+  /* the client code — THEIRS to create, right here: any name, any emoji, any color.
+     The clinic already maps animals to children outside the app; this follows their system. */
+  const c1 = el('div', 'card'); c1.id = 'sec-code';
   c1.innerHTML = '<h3><span class="tick" style="--tool:#2E8B94"></span>Client code & author</h3>';
-  const codeRow = el('div', 'row'); codeRow.style.alignItems = 'center'; codeRow.style.gap = '16px';
+  const slugify = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
   const chipBig = el('div', 'codechip');
-  chipBig.style.background = p.code.color;
-  chipBig.innerHTML = `<span class="ce">${esc(p.code.emoji)}</span>${esc(p.code.name)}`;
+  const paintCode = () => {
+    chipBig.style.background = p.code.color;
+    chipBig.innerHTML = `<span class="ce">${esc(p.code.emoji)}</span>${esc(p.code.name)}`;
+    const h2 = $('.mtop h2'); if (h2) h2.textContent = `${p.code.emoji} ${p.code.name}`;
+    drawSidebar(); refreshExportName();
+  };
+  const codeRow = el('div', 'row'); codeRow.style.alignItems = 'center'; codeRow.style.gap = '16px';
   codeRow.appendChild(chipBig);
   codeRow.appendChild(el('span', 'sub', 'Keep the code↔child mapping in your own records.'));
   c1.appendChild(codeRow);
-  const fBy = el('div', 'field'); fBy.style.marginTop = '14px'; fBy.style.maxWidth = '340px';
+  /* name — applies on blur/Enter with a uniqueness check; a circulated code warns once */
+  const edRow = el('div', 'row'); edRow.style.cssText = 'margin-top:14px;align-items:flex-end;gap:16px';
+  const nameF = el('div', 'field');
+  nameF.appendChild(el('span', 'label', 'Code name (their animal system — any word)'));
+  const nameIn = el('input', 'tin'); nameIn.maxLength = 24; nameIn.value = p.code.name; nameIn.style.width = '220px';
+  nameF.appendChild(nameIn);
+  const applyName = () => {
+    const name = nameIn.value.trim(), slug = slugify(name);
+    if (!name || !slug || slug === p.code.slug) { nameIn.value = p.code.name; return; }
+    if (codeTaken(slug, p.id)) { flash(`“${name}” is already another client`); nameIn.value = p.code.name; return; }
+    const doIt = () => { p.code = { ...p.code, name: name.slice(0, 24), slug }; markDirty(); paintCode(); flash(`Code is now ${p.code.emoji} ${name}`); };
+    if (p.updated) confirm2(`Rename ${p.code.name}?`, 'This folder has been exported before — tablets keyed to the old code will treat the next import as a brand-new client.', doIt, 'Rename');
+    else doIt();
+  };
+  nameIn.onblur = applyName;
+  nameIn.onkeydown = (e) => { if (e.key === 'Enter') nameIn.blur(); };
+  const emF = el('div', 'field');
+  emF.appendChild(el('span', 'label', 'Emoji — anything'));
+  const emIn = el('input', 'tin'); emIn.maxLength = 8; emIn.value = p.code.emoji; emIn.style.cssText = 'width:84px;font-size:24px;text-align:center';
+  emIn.oninput = () => { const v = emIn.value.trim(); if (v) { p.code.emoji = v.slice(0, 8); markDirty(); paintCode(); } };
+  emF.appendChild(emIn);
+  edRow.append(nameF, emF);
+  c1.appendChild(edRow);
+  /* quick emoji grid — one tap, and the input takes anything beyond it */
+  const emGrid = el('div', 'code-pick'); emGrid.style.marginTop = '10px';
+  ['🦊','🦉','🐻','🐸','🦆','🦌','🦦','🐨','🐼','🐰','🐢','🐳','🐯','🐶','🐱','🐦','🦁','🐮','🦋','🐝','🐙','🦕','🦄','🐬'].forEach(e2 => {
+    const b = el('button', p.code.emoji === e2 ? 'on' : '', e2);
+    b.onclick = () => { p.code.emoji = e2; emIn.value = e2; markDirty(); paintCode(); $$('button', emGrid).forEach(x => x.classList.toggle('on', x.textContent === e2)); };
+    emGrid.appendChild(b);
+  });
+  c1.appendChild(emGrid);
+  /* color — palette or anything */
+  const colRow = el('div', 'row'); colRow.style.marginTop = '10px';
+  const colDots = el('div', 'code-pick');
+  const colIn = el('input'); colIn.type = 'color'; colIn.value = /^#/.test(p.code.color) ? p.code.color : '#2E8B94';
+  colIn.title = 'Any color';
+  colIn.style.cssText = 'width:36px;height:36px;border:none;border-radius:50%;padding:0;background:none;cursor:pointer';
+  const paintColorDots = () => { colDots.innerHTML = '';
+    CODE_COLORS.forEach(c2 => { const b = el('button', p.code.color === c2.hex ? 'on' : ''); b.style.background = c2.hex; b.title = c2.name;
+      b.onclick = () => { p.code.color = c2.hex; colIn.value = c2.hex; markDirty(); paintCode(); paintColorDots(); }; colDots.appendChild(b); }); };
+  colIn.oninput = () => { p.code.color = colIn.value; markDirty(); paintCode(); paintColorDots(); };
+  paintColorDots();
+  colRow.append(el('span', 'label', 'Color'), colDots, colIn);
+  c1.appendChild(colRow);
+  const fBy = el('div', 'field'); fBy.style.marginTop = '14px'; fBy.style.maxWidth = '440px';
   fBy.appendChild(el('span', 'label', 'Updated by (role or first name)'));
   const by = el('input', 'tin'); by.maxLength = 24; by.placeholder = 'e.g. BCBA, Intern, Ms. R'; by.value = p.updatedBy || '';
-  by.oninput = () => { p.updatedBy = by.value; markDirty(); refreshExportName(); };
   fBy.appendChild(by);
+  /* the author's OWN color — one pick, and every case they touch wears it.
+     1.07 fix: picking with an empty name used to silently do nothing */
+  const acRow = el('div', 'row'); acRow.style.marginTop = '8px';
+  const acPick = el('div', 'code-pick');
+  const acSwatch = el('span'); // live proof the pick landed
+  acSwatch.style.cssText = 'width:26px;height:26px;border-radius:50%;border:2px solid var(--line);display:inline-block;flex:0 0 auto';
+  const acCustom = el('input'); acCustom.type = 'color'; acCustom.title = 'Any color';
+  acCustom.style.cssText = 'width:36px;height:36px;border:none;border-radius:50%;padding:0;background:none;cursor:pointer';
+  const needName = () => { if (!by.value.trim()) { flash('Type the author name first — the color belongs to them'); by.focus(); return true; } return false; };
+  const paintAc = () => {
+    const cur = Authors.color(by.value);
+    acSwatch.style.background = cur || 'transparent';
+    acSwatch.title = cur ? `${by.value.trim()}'s color` : 'No color picked yet';
+    acPick.innerHTML = '';
+    CODE_COLORS.forEach(c2 => {
+      const b = el('button', cur === c2.hex ? 'on' : '', cur === c2.hex ? '✓' : '');
+      b.style.background = c2.hex; b.style.color = '#fff'; b.title = c2.name;
+      b.onclick = () => { if (needName()) return; Authors.set(by.value, c2.hex); paintAc(); drawSidebar(); flash(`${by.value.trim()}'s color saved`); };
+      acPick.appendChild(b);
+    });
+    if (cur) acCustom.value = cur;
+  };
+  acCustom.oninput = () => { if (needName()) return; Authors.set(by.value, acCustom.value); paintAc(); drawSidebar(); };
+  by.oninput = () => { p.updatedBy = by.value; markDirty(); refreshExportName(); paintAc(); };
+  paintAc();
+  acRow.append(el('span', 'label', 'My color'), acSwatch, acPick, acCustom);
+  acRow.append(el('span', 'sub', 'Shows on your cases here and on the tablet.'));
+  fBy.appendChild(acRow);
   c1.appendChild(fBy);
   root.appendChild(c1);
 
   /* note + note tags */
-  const cN = el('div', 'card');
+  const cN = el('div', 'card'); cN.id = 'sec-note';
   cN.innerHTML = '<h3><span class="tick" style="--tool:#F2C14E"></span>Note to the RBT <span style="font-weight:500;color:var(--muted);font-size:12px">(optional — shows as a gold Note button; no PHI)</span></h3>';
   const ta = el('textarea', 'tin'); ta.maxLength = 4000; ta.value = p.note; ta.placeholder = 'e.g. Run the visual schedule at arrival. Tokens for table work only — 5 stars, the reward picture is the reinforcer. Celebrations stay off (sound-sensitive).';
   ta.oninput = () => { p.note = ta.value; markDirty(); };
@@ -575,7 +730,7 @@ function render() {
   root.appendChild(cN);
 
   /* prescribed tools */
-  const cT = el('div', 'card');
+  const cT = el('div', 'card'); cT.id = 'sec-tools';
   cT.innerHTML = '<h3><span class="tick" style="--tool:#5FA772"></span>Prescribed tools</h3>';
   cT.appendChild(el('div', 'sub', 'The tablet shows only these.'));
   const tp = el('div', 'toolpick');
@@ -589,7 +744,7 @@ function render() {
   root.appendChild(cT);
 
   /* presets — their own interface, per prescribed tool */
-  const cP = el('div', 'card');
+  const cP = el('div', 'card'); cP.id = 'sec-presets';
   cP.innerHTML = '<h3><span class="tick" style="--tool:#1C5A61"></span>Presets</h3>';
   const anyTool = p.tools.filter(k => PRESETABLE.includes(k));
   if (!anyTool.length) cP.appendChild(el('div', 'sub', 'Pick prescribed tools above, then build presets for them here.'));
@@ -607,7 +762,7 @@ function render() {
 
   /* per-tool guidance: a note bubble + hard min/max limits, straight into each tool's setup screen */
   if (p.tools.length) {
-    const cL = el('div', 'card');
+    const cL = el('div', 'card'); cL.id = 'sec-limits';
     cL.innerHTML = '<h3><span class="tick" style="--tool:#F2C14E"></span>Per-tool notes & limits <span style="font-weight:500;color:var(--muted);font-size:12px">(optional)</span></h3>';
     cL.appendChild(el('div', 'sub', 'Notes appear on that tool\'s setup screen. Limits are enforced on the tablet; blank = no limit.'));
     const LIM_UI = {
@@ -701,14 +856,19 @@ function render() {
   root.appendChild(advancedCard(p));
 
   /* checklist */
-  const cC = el('div', 'card'); cC.id = 'checkCard';
+  const cC = el('div', 'card'); cC.id = 'checkCard'; cC.setAttribute('id','sec-check');
   cC.innerHTML = '<h3><span class="tick" style="--tool:#1C5A61"></span>What the RBT will see</h3><div id="rbtPreview"></div><div class="oklist" id="oklist" style="margin-top:14px"></div>';
   root.appendChild(cC);
 
+  /* the bar is about SAVING to the clinic system — not files, not zips */
   const bar = el('div', 'exportbar');
   const en = el('div', 'ename'); en.id = 'exportName';
-  const exb = el('button', 'btn btn-primary btn-lg', '⬇ Export client folder (.zip)');
-  exb.onclick = () => exportProfile(p);
+  const exb = el('button', 'btn btn-primary btn-lg', '💾 Save to clinic');
+  exb.title = 'Publishes every client to the clinic system — tablets update themselves';
+  exb.onclick = () => {
+    if (!p.code.name) { flash('Give this client their code first'); return; }
+    publishClinic();
+  };
   bar.append(en, exb);
   root.appendChild(bar);
   refreshExportName();
@@ -833,10 +993,31 @@ const PRESET_UI = {
     cIn.oninput = () => { const v = clamp(Math.round(+cIn.value || 1), 1, 30); pr.count = v;
       $$('button', seg).forEach(b => b.classList.toggle('on', +b.textContent === v)); markDirty(); };
     f1.appendChild(segRow2);
-    const f2 = el('div', 'field'); f2.appendChild(el('span', 'label', 'Token symbol'));
-    const te = el('input', 'tin tin-s'); te.maxLength = 4; te.value = pr.theme; te.style.fontSize = '22px'; te.style.textAlign = 'center';
-    te.oninput = () => { pr.theme = te.value || '⭐'; markDirty(); };
-    f2.appendChild(te);
+    const f2 = el('div', 'field');
+    f2.appendChild(el('span', 'label', 'Token symbols — one or a mix, ANY emoji (the board cycles them)'));
+    const symWrap = el('div', 'row');
+    const syms = () => (Array.isArray(pr.theme) ? pr.theme : [pr.theme || '⭐']).filter(Boolean);
+    const setSyms = (arr) => { pr.theme = arr.length <= 1 ? (arr[0] || '⭐') : arr.slice(0, 30); markDirty(); drawSyms(); };
+    const te = el('input', 'tin tin-s'); te.maxLength = 8; te.placeholder = '＋'; te.style.fontSize = '20px'; te.style.textAlign = 'center';
+    const addB = el('button', 'btn btn-sm', 'Add');
+    const drawSyms = () => {
+      symWrap.innerHTML = '';
+      syms().forEach((s, i) => {
+        const ch = el('button', 'chip'); ch.style.fontSize = '20px';
+        ch.appendChild(document.createTextNode(s));
+        if (syms().length > 1) {
+          const x = el('span', 'px', '×');
+          x.onclick = (e) => { e.stopPropagation(); const a = syms(); a.splice(i, 1); setSyms(a); };
+          ch.appendChild(x);
+        }
+        symWrap.appendChild(ch);
+      });
+      symWrap.append(te, addB);
+    };
+    addB.onclick = () => { const v = te.value.trim(); if (!v) return; const a = syms(); if (!a.includes(v)) setSyms([...a, v]); te.value = ''; };
+    te.onkeydown = (e) => { if (e.key === 'Enter') addB.click(); };
+    drawSyms();
+    f2.appendChild(symWrap);
     r.append(f1, f2);
     w.appendChild(r);
     w.appendChild(imgWithLabel(pr, 'Reward picture — the “working for”', 'e.g. iPad'));
@@ -934,7 +1115,7 @@ const PRESET_UI = {
     const w = el('div');
     const modeF = el('div', 'field'); modeF.style.marginBottom = '12px';
     modeF.appendChild(el('span', 'label', 'Style on the tablet'));
-    modeF.appendChild(mkSeg([['focus', 'Focus — one big step + next'], ['list', 'List — whole plan']], pr.mode, v => { pr.mode = v; markDirty(); }));
+    modeF.appendChild(mkSeg([['focus', 'Focus — one big step + next'], ['list', 'List — whole plan'], ['board', 'Board — To Do → Done']], pr.mode, v => { pr.mode = v; markDirty(); }));
     w.appendChild(modeF);
     const list = el('div');
     const draw = () => {
@@ -969,7 +1150,7 @@ const PRESET_UI = {
   },
 };
 function galleryCard(p) {
-  const c = el('div', 'card');
+  const c = el('div', 'card'); c.id = 'sec-visuals';
   c.innerHTML = '<h3><span class="tick" style="--tool:#75807F"></span>Client Visuals <span style="font-weight:500;color:var(--muted);font-size:12px">(optional)</span></h3>';
   const list = el('div', 'row'); list.style.gap = '14px'; list.style.alignItems = 'flex-start';
   const draw = () => {
@@ -1022,7 +1203,7 @@ function galleryCard(p) {
 }
 /* ---------- Advanced: the settings that should take a beat ---------- */
 function advancedCard(p) {
-  const c = el('div', 'card');
+  const c = el('div', 'card'); c.id = 'sec-adv';
   const head = el('button', 'adv-head');
   head.innerHTML = `<h3 style="margin:0"><span class="tick" style="--tool:#75807F"></span>Advanced</h3><span class="adv-arrow">▾</span>`;
   const body = el('div', 'adv-body hidden');
@@ -1037,43 +1218,13 @@ function advancedCard(p) {
   vRow.appendChild(el('span', 'sub', 'The tablet\'s picker offers only this folder\'s pictures (typed words stay).'));
   body.appendChild(vRow);
 
-  /* code editing — deliberately behind a confirm */
-  const codeWrap = el('div');
-  const editB = el('button', 'btn btn-sm btn-ghost', 'Change client code…');
-  editB.onclick = () => confirm2(`Change ${p.code.name}'s code?`,
-    'Folders and tablets keyed to the current code will treat the next import as a brand-new client. Only do this before a client is in circulation.',
-    () => { editB.remove(); buildPickers(); }, 'Continue');
-  codeWrap.appendChild(editB);
-  const buildPickers = () => {
-    const colorRow = el('div', 'code-pick'); const animalRow = el('div', 'code-pick'); animalRow.style.marginTop = '8px';
-    const curIx = () => {
-      const ci = CODE_COLORS.findIndex(c2 => p.code.color === c2.hex);
-      const ai = CODE_ANIMALS.findIndex(a => p.code.emoji === a[1]);
-      return [ci < 0 ? 0 : ci, ai < 0 ? 0 : ai];
-    };
-    const setCode = (ci, ai) => {
-      const code = mkCode(ci, ai);
-      if (codeTaken(code.slug, p.id)) { flash(`${code.emoji} ${code.name} is already another client`); return; }
-      p.code = code; markDirty(); refreshExportName(); drawSidebar(); render();
-    };
-    const paintPicks = () => {
-      const [ci0, ai0] = curIx();
-      colorRow.innerHTML = ''; animalRow.innerHTML = '';
-      CODE_COLORS.forEach((c2, ci) => {
-        const b = el('button', ci === ci0 ? 'on' : ''); b.style.background = c2.hex; b.title = c2.name;
-        b.onclick = () => setCode(ci, curIx()[1]);
-        colorRow.appendChild(b);
-      });
-      CODE_ANIMALS.forEach((a, ai) => {
-        const b = el('button', ai === ai0 ? 'on' : '', a[1]); b.title = a[0];
-        b.onclick = () => setCode(curIx()[0], ai);
-        animalRow.appendChild(b);
-      });
-    };
-    paintPicks();
-    codeWrap.append(colorRow, animalRow);
-  };
-  body.appendChild(codeWrap);
+  /* (1.07) the code editor moved to the main card — it's the author's code to create */
+  /* the OLD zip export lives here now — for BCBA↔BCBA hand-offs, not the daily flow */
+  const zRow = el('div', 'row'); zRow.style.marginTop = '16px';
+  const zB = el('button', 'btn btn-sm btn-ghost', 'Export this client as .zip (hand-off backup)');
+  zB.onclick = () => { if (!p.code.name) { flash('Name the code first'); return; } exportProfile(p); };
+  zRow.appendChild(zB);
+  body.appendChild(zRow);
   return c;
 }
 async function refreshPreview() {
@@ -1223,6 +1374,7 @@ async function buildProfileFiles(p, files, used) {
     const j = { app: 'rbt-tools', kind: 'client', version: APP_VERSION, ts: p.ts || Date.now(),
       code: p.code,
       updated: todayStr().replace(/-/g, '/'), updatedBy: (p.updatedBy || 'BCBA').trim(),
+      updatedByColor: Authors.color(p.updatedBy) || undefined,
       note: (p.note || '').trim() || undefined,
       tools: p.tools.slice(),
       limits: Object.keys(p.limits || {}).length ? p.limits : undefined,
@@ -1278,7 +1430,52 @@ async function buildProfileFiles(p, files, used) {
     return j;
   }
 }
+/* ---------- the PHI gate: nothing leaves without a scan.
+   Every hit is named EXACTLY — which field, which preset, which step. ---------- */
+function phiScan(p) {
+  const hits = [];
+  const nameLike = (t) => /\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.exec(String(t || ''));
+  const chk = (where, t) => { const m = nameLike(t); if (m) hits.push({ where, match: m[0] }); };
+  chk('Note to the RBT', p.note);
+  Object.entries(p.toolNotes || {}).forEach(([k, t]) => chk(`${TTITLE[k] || k} tool note`, t));
+  PRESETABLE.forEach(k => (p.presets[k] || []).forEach((pr, pi) => {
+    const pn = pr.name || `Preset ${pi + 1}`;
+    chk(`${TTITLE[k]} preset name “${pn}”`, pr.name);
+    chk(`${TTITLE[k]} “${pn}” picture label`, pr.imgLabel);
+    (pr.slots || []).forEach((sl, si) => chk(`First·Then “${pn}”, slot ${si + 1} label`, sl.label));
+    (pr.options || []).forEach((o, oi) => chk(`Choice “${pn}”, option ${oi + 1} label`, o.label));
+    (pr.steps || []).forEach((s2, si) => chk(`Schedule “${pn}”, step ${si + 1} label`, s2.label));
+    (pr.people || []).forEach((pe, ii) => {
+      const n = (pe.name || '').trim();
+      if (n && !/^(me|you|friend|teacher|mom|dad|rbt|bcba|intern|buddy|peer)$/i.test(n) && /^[A-Z][a-z]{2,}$/.test(n))
+        hits.push({ where: `Turns “${pn}”, player ${ii + 1} name`, match: n });
+    });
+  }));
+  (p.gallery || []).forEach((g, gi) => chk(`Client Visual ${gi + 1} label`, g.label));
+  return hits;
+}
+function phiGate(hits, title, onAnyway) {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal');
+  m.appendChild(el('h2', '', '⚠ Possible PHI — look before it leaves'));
+  m.appendChild(el('p', '', `<span style="color:var(--muted);font-weight:700;font-size:13px">${esc(title)} was checked before export. These spots LOOK like real names. Codes and roles only — fix them, or export anyway if they're false alarms (e.g. “Circle Time”).</span>`));
+  const listEl = el('div'); listEl.style.cssText = 'margin:10px 0;display:flex;flex-direction:column;gap:7px';
+  hits.slice(0, 20).forEach(h => listEl.appendChild(el('div', '', `<span style="font-weight:700;font-size:13px">📍 ${esc(h.where)}: <b style="color:#9a5a2f">“${esc(h.match)}”</b></span>`)));
+  if (hits.length > 20) listEl.appendChild(el('div', 'sub', `…and ${hits.length - 20} more`));
+  m.appendChild(listEl);
+  const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '14px';
+  const back = el('button', 'btn btn-primary', 'Go back and fix'); back.onclick = () => scrim.remove();
+  const any = el('button', 'btn btn-ghost', 'Export anyway'); any.onclick = () => { scrim.remove(); onAnyway(); };
+  r.append(any, back); m.appendChild(r); scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
 async function exportProfile(p) {
+  const hits = phiScan(p);
+  if (hits.length) return phiGate(hits, `${p.code.emoji} ${p.code.name}`, () => doExportProfile(p));
+  return doExportProfile(p);
+}
+async function doExportProfile(p) {
   const guard = $('.exportbar .btn-primary'); if (guard) guard.disabled = true;
   try {
     const files = [], used = new Set();
@@ -1299,6 +1496,12 @@ async function exportProfile(p) {
 async function exportClinic() {
   const ready = Profiles.list.filter(p => p.code && p.tools.length);
   if (!ready.length) { flash('No clients with prescribed tools to export yet.'); return; }
+  const allHits = [];
+  ready.forEach(p => phiScan(p).forEach(h => allHits.push({ where: `${p.code.emoji} ${p.code.name} → ${h.where}`, match: h.match })));
+  if (allHits.length) return phiGate(allHits, 'Every client in the clinic file', () => doExportClinic(ready));
+  return doExportClinic(ready);
+}
+async function doExportClinic(ready) {
   const prog = el('div', 'flash', 'Building the clinic file…'); document.body.appendChild(prog);
   try {
     const files = [], used = new Set();
@@ -1331,6 +1534,24 @@ async function importZip(file) {
     const entries = (await unzipAll(await file.arrayBuffer()))
       .map(e => ({ ...e, path: e.path.replace(/\\/g, '/') }))
       .filter(e => !e.path.includes('__MACOSX') && !e.path.split('/').some(s => s.startsWith('.')));
+    /* clinic library travels in the same zip — newer wins */
+    try {
+      const libConf = entries.find(e => e.path === 'library.json' || e.path.endsWith('/library.json'));
+      if (libConf) {
+        const lib = JSON.parse(new TextDecoder().decode(libConf.data));
+        if ((lib.ts || 0) > ClinicVis.ts()) {
+          const arr = [];
+          for (const it of (lib.items || []).slice(0, 400)) {
+            const e2 = entries.find(x => x.path === it.path); if (!e2) continue;
+            const blob = await processImage(new Blob([e2.data], { type: 'image/jpeg' }));
+            const id = await storeImage(blob);
+            arr.push({ img: id, label: String(it.label || '').slice(0, 24), cat: ['places','activities','rewards','people'].includes(it.cat) ? it.cat : 'activities', tags: (it.tags || []).map(t => String(t).slice(0, 18)).slice(0, 8) });
+          }
+          ClinicVis.setAll(arr, lib.ts);
+          flash(`Clinic library updated (${arr.length} pictures)`);
+        }
+      }
+    } catch {}
     const confs = entries.filter(e => baseName(e.path).toLowerCase() === 'client.json')
       .sort((a, b) => a.path.split('/').length - b.path.split('/').length);
     if (!confs.length) throw new Error('No client.json in that zip — only folders exported by the Client Profiles app can be opened here.');
@@ -1393,6 +1614,8 @@ async function parseClientFolder(jconf, entries) {
     const p = Profiles.fresh();
     p.code = code;
     p.updatedBy = String(j.updatedBy || 'BCBA').slice(0, 24);
+    /* author colors travel with clinic files — a colleague's import learns their color */
+    if (j.updatedByColor && /^#[0-9a-fA-F]{6}$/.test(String(j.updatedByColor)) && !Authors.color(p.updatedBy)) Authors.set(p.updatedBy, j.updatedByColor);
     p.note = String(j.note || '').slice(0, 4000);
     const A = { schedule: 'sched', tokens: 'token', turns: 'turn', 'first-then': 'ft' };
     p.tools = (j.tools || []).map(t => A[t] || t).filter(k => TTITLE[k]);
@@ -1411,7 +1634,9 @@ async function parseClientFolder(jconf, entries) {
     const P = j.presets || {};
     for (const pr of (P.timer || [])) { const v = await VV(pr.visual); p.presets.timer.push({ ...PF.timer(), name: pr.name || '', m: pr.m ?? 5, s: pr.s ?? 0, moreS: pr.moreS || 60, style: pr.style || 'pie', showNum: pr.showNum !== false, img: v.img, imgLabel: v.label }); }
     for (const pr of (P.wait || [])) { const v = await VV(pr.reward); p.presets.wait.push({ ...PF.wait(), name: pr.name || '', m: pr.m ?? 0, s: pr.s ?? 30, style: pr.style || 'pie', showNum: pr.showNum !== false, img: v.img, imgLabel: v.label }); }
-    for (const pr of (P.token || [])) { const v = await VV(pr.reward); p.presets.token.push({ ...PF.token(), name: pr.name || '', count: clamp(+pr.count || 5, 1, 30), theme: pr.theme || '⭐', img: v.img, imgLabel: v.label }); }
+    for (const pr of (P.token || [])) { const v = await VV(pr.reward);
+      const theme = Array.isArray(pr.theme) ? pr.theme.map(x => String(x).slice(0, 8)).filter(Boolean).slice(0, 30) : (pr.theme || '⭐');
+      p.presets.token.push({ ...PF.token(), name: pr.name || '', count: clamp(+pr.count || 5, 1, 30), theme: (Array.isArray(theme) && !theme.length) ? '⭐' : theme, img: v.img, imgLabel: v.label }); }
     for (const pr of (P.ft || [])) { const s0 = await VV(pr.first), s1 = await VV(pr.then), s2 = await VV(pr.third);
       p.presets.ft.push({ name: pr.name || '', useThird: !!pr.useThird, slots: [{ img: s0.img, label: s0.label }, { img: s1.img, label: s1.label }, { img: s2.img, label: s2.label }] }); }
     for (const pr of (P.choice || [])) { const options = []; for (const o of (pr.options || []).slice(0, 16)) { const v = await VV(o); options.push({ img: v.img, label: v.label }); }
@@ -1421,7 +1646,7 @@ async function parseClientFolder(jconf, entries) {
       while (people.length < 2) people.push({ name: '', img: null });
       p.presets.turn.push({ name: pr.name || '', seconds: Math.max(0, +pr.seconds || 0), people }); }
     for (const pr of (P.sched || [])) { const steps = []; for (const s2 of (pr.steps || [])) { const v = await VV(s2); steps.push({ img: v.img, label: v.label }); }
-      p.presets.sched.push({ name: pr.name || '', mode: pr.mode === 'list' ? 'list' : 'focus', steps }); }
+      p.presets.sched.push({ name: pr.name || '', mode: ['list', 'board'].includes(pr.mode) ? pr.mode : 'focus', steps }); }
     for (const g of (j.gallery || [])) {
       if (g.bundled) { const has = (window.BUNDLED_VISUALS || []).some(b => b.id === g.bundled); p.gallery.push({ img: has ? 'b:' + g.bundled : null, label: String(g.label || bundledLabel(g.bundled) || '').slice(0, 24), cat: ['places','activities','rewards'].includes(g.cat) ? g.cat : 'activities' }); continue; }
       p.gallery.push({ img: await idByPath(g.path), label: String(g.label || stripForLabel(baseName(g.path || ''))).slice(0, 24), cat: ['places','activities','rewards'].includes(g.cat) ? g.cat : 'activities' });
@@ -1446,6 +1671,34 @@ function openFeedback() {
   document.body.appendChild(scrim);
 }
 const CHANGELOG = [
+  { v: '1.09x', items: [
+    'Two-minute setup wizard: your name, your color, paste one key — building',
+    'Save to clinic replaces exporting — the bar shows saved/unsaved, the zip moved to Advanced (hand-offs only)',
+    'New clients start truly blank: their code, their creation — nothing prefilled',
+    '🖼 Clinic library: shared pictures every tablet gets preloaded, organized into picker tabs, tagged for search',
+    'Pull latest: colleagues’ saves and the library flow back into this app',
+    'Removing a client is a typed, deliberate process — and tablets follow on the next save',
+    'Key-expiry watch: from ~11 months, a daily reminder until fresh keys are saved',
+    'Guide: real legality & ethics section + the ownership-transfer process, step by step',
+    'Sticky jump-nav for laptops; BAA brief retired',
+  ] },
+  { v: '1.08x', items: [
+    'Publish replaces exporting: one button sends the whole caseload to every tablet (PHI-gated)',
+    'You set the tablet PIN here — RBT tablets obey it and can’t change it',
+    'Optional encrypted vault: the caseload is ciphertext at rest, passphrase at open',
+    'This app stays with the clinic lead until BCBAs are onboarded (experimental)',
+  ] },
+  { v: '1.07', items: [
+    'PHI gate: every export is scanned first — hits are named exactly (which preset, which step) before anything leaves',
+    'The client code editor lives on the main card now: their name, their emoji (grid + anything), their color',
+    'Author color fix: picking with an empty name now says so instead of silently doing nothing; live swatch confirms the pick',
+    'Token presets: mix any emojis on one board — the tablet cycles them',
+  ] },
+  { v: '1.06', items: [
+    'Client codes set free: any animal word, any emoji, any color — classic combos stay one tap away',
+    'Author colors: each BCBA/intern picks a color; their cases wear it here and on the tablet',
+    'Schedule presets can prescribe the new Board (To Do → Done) style',
+  ] },
   { v: '1.05', items: [
     'Feedback: in-person first — the form is the backup',
     'Export folder name scrubs characters that break file paths',
@@ -1532,6 +1785,55 @@ function openBaaBrief() {
   scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
   document.body.appendChild(scrim);
 }
+/* the whole app, explained for BCBAs/Interns — numbered, plain, in-app */
+function openGuideCP() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal'); m.style.width = 'min(640px,96vw)';
+  const S2 = (h, items) => `<div style="margin:0 0 16px"><h2 style="font-size:15.5px;margin-bottom:6px">${h}</h2>` +
+    (Array.isArray(items) ? `<ol style="margin:0;padding-left:22px;font-weight:600;font-size:13.5px;line-height:1.7;color:var(--ink)">${items.map(i => `<li>${i}</li>`).join('')}</ol>`
+      : `<p style="margin:0;font-weight:600;font-size:13.5px;line-height:1.6;color:var(--ink)">${items}</p>`) + '</div>';
+  m.innerHTML = `<h2>📖 Guide for BCBAs & Interns</h2>
+    <p style="color:var(--muted);font-weight:700;font-size:12.5px;margin:-4px 0 14px">Everything you build here lands on every RBT tablet automatically when you press Publish.</p>`
+  + S2('Golden rule', '<b>No PHI, ever.</b> Clients exist only as their animal code. No names, no photos of children — anywhere, including picture labels. The app scans before every Publish and points at anything that looks like a name.')
+  + S2('Make a client', [
+    'Click <b>New client</b>',
+    'Set their code: the animal name your clinic already uses, an emoji, a color',
+    'Type your name under <b>Updated by</b> and pick <b>My color</b>',
+    'Tick the <b>Prescribed tools</b> the client should see (the tablet shows only these)',
+    'Build <b>Presets</b> for those tools — schedules, timers, token boards (any emojis)',
+    'Optional: per-tool notes, limits (the tablet enforces them), a note to the RBT',
+  ])
+  + S2('Send it to the tablets', [
+    'Click <b>🔐 Security & sync</b>',
+    'Click <b>⬆ Publish clinic file now</b>',
+    'That’s it — every tablet updates itself within minutes',
+  ])
+  + S2('The tablet PIN', 'You set it in Security & sync (ships with the next Publish). RBTs cannot change or remove it.')
+  + S2('New tablet?', 'Print the <b>office card</b> from Security & sync — the tablet scans it once and joins forever.')
+  + S2('Privacy options', '<b>Encrypt caseload</b> locks this app behind a passphrase (real encryption). The PHI scanner runs on every save and publish, always.')
+  + S2('Legality & ethics — the real picture', [
+    '<b>HIPAA:</b> PHI means health information tied to identifiers (names, photos, birthdates…). These apps are designed to hold NONE of it — clients exist only as animal codes, and de-identified information is not PHI. That design only holds if you never type a name or upload a photo of a child. A recognizable photo IS PHI.',
+    '<b>Minimum necessary:</b> even de-identified, share the least needed. Notes to RBTs should carry programming context, not history.',
+    '<b>BACB Ethics Code 2.03 & 2.05:</b> behavior analysts protect confidential information and safeguard documentation. Treat the code↔child mapping (kept OUTSIDE these apps, in clinic records) as confidential documentation.',
+    '<b>These tools supplement, never replace:</b> individualized programming, BCBA supervision, and required data collection (e.g., CentralReach) always take precedence.',
+    '<b>If something slips:</b> a real name or identifiable photo published to the clinic system = tell your supervisor/compliance officer immediately, fix, republish. Fast honesty beats quiet fixes.',
+    'This is orientation, not legal advice — your clinic’s compliance officer has the final word.',
+  ])
+  + S2('Transferring ownership to the clinical team', [
+    'Create (or pick) a clinic-owned GitHub account — not a personal one',
+    'On both repos (the app repo and the data repo): Settings → <b>Transfer ownership</b> → the clinic account',
+    'The new owner makes FRESH tokens (one write, one read-only) and revokes all old ones',
+    'Open Security & sync → save the new repo/token → <b>Test connection</b> → <b>Save to clinic</b>',
+    'Reprint the office card (new tablet key) → rescan on every tablet',
+    'Hand over: the vault passphrase (if used), the tablet PIN, and this app’s file',
+    'Remove the previous owner as collaborator — done: the clinic owns everything',
+  ]);
+  const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '10px';
+  const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
+  r.appendChild(ok); m.appendChild(r); scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
 function openWhatsNew() {
   const scrim = el('div', 'scrim');
   const m = el('div', 'modal', `<h2>What's new</h2>` + CHANGELOG.map(rel =>
@@ -1554,7 +1856,54 @@ function confirm2(title, body, onYes, yesLabel) {
 function newProfile() {
   const p = Profiles.fresh();
   Profiles.list.push(p); Profiles.activeId = p.id; Profiles.save(); render();
-  flash(`New client: ${p.code.emoji} ${p.code.name}`);
+  flash('New client — start with their code');
+}
+/* first-run wizard: anyone, any comfort level, set up in under two minutes */
+function openSetupWizard() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal'); m.style.width = 'min(480px,96vw)';
+  scrim.appendChild(m); document.body.appendChild(scrim);
+  const doneAll = () => { try { LS.setItem('rbts.setupDone', '1'); } catch {} scrim.remove(); render(); };
+  const step1 = () => {
+    m.innerHTML = `<h2>Welcome 👋</h2>
+      <p style="font-weight:600;color:var(--ink);line-height:1.6;font-size:14px">Two quick things and you're building. <b>Step 1 of 2:</b> who are you?</p>`;
+    const nIn = el('input', 'tin'); nIn.placeholder = 'e.g. BCBA, Intern, Ms. R'; nIn.maxLength = 24;
+    const dots = el('div', 'code-pick'); dots.style.marginTop = '10px';
+    let myColor = null;
+    CODE_COLORS.forEach(c2 => { const b = el('button', ''); b.style.background = c2.hex; b.title = c2.name;
+      b.onclick = () => { myColor = c2.hex; $$('button', dots).forEach(x => { x.classList.remove('on'); x.textContent = ''; }); b.classList.add('on'); b.textContent = '✓'; b.style.color = '#fff'; };
+      dots.appendChild(b); });
+    m.append(el('div', 'label', 'Your name or role'), nIn, el('div', 'label', 'Your color (marks your cases)'), dots);
+    const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:16px';
+    const next = el('button', 'btn btn-primary', 'Next →');
+    next.onclick = () => { const n = nIn.value.trim(); if (!n) { flash('Type your name or role'); return; }
+      try { LS.setItem('rbts.me', n); } catch {}
+      if (myColor) Authors.set(n, myColor);
+      step2(); };
+    r.appendChild(next); m.appendChild(r);
+    setTimeout(() => nIn.focus(), 80);
+  };
+  const step2 = () => {
+    m.innerHTML = `<h2>Connect the clinic 🔗</h2>
+      <p style="font-weight:600;color:var(--ink);line-height:1.6;font-size:14px"><b>Step 2 of 2.</b> If your clinic lead gave you a key, paste it — everything you build then reaches the tablets with one Save. No key yet? Skip; the app works fully on this computer.</p>`;
+    const tIn = el('input', 'tin'); tIn.type = 'password'; tIn.placeholder = 'paste the write key (github_pat_…)';
+    m.append(tIn);
+    const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:16px;gap:8px';
+    const skip = el('button', 'btn btn-ghost', 'Skip for now'); skip.onclick = doneAll;
+    const go = el('button', 'btn btn-primary', 'Connect ✓');
+    go.onclick = async () => {
+      const tok = tIn.value.trim(); if (!tok) { flash('Paste the key, or Skip'); return; }
+      PubCfg.set({ repo: (PubCfg.get() || {}).repo || 'RBT-Tools-and-stuffs/rbt-clinic-data', token: tok });
+      try {
+        const c = PubCfg.get();
+        const r2 = await fetch(`https://api.github.com/repos/${c.repo}`, { headers: { 'Authorization': 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28' } });
+        flash(r2.ok ? 'Connected ✓' : 'Saved — couldn’t verify yet (check Security & sync later)');
+      } catch { flash('Saved — will verify when online'); }
+      doneAll();
+    };
+    r.append(skip, go); m.appendChild(r);
+  };
+  step1();
 }
 function firstRunAck() {
   try { if (LS.getItem('rbts.ack')) return; } catch {}
@@ -1571,18 +1920,487 @@ function firstRunAck() {
   document.body.appendChild(scrim);
 }
 
+/* ============================================================
+   EXPERIMENTAL MIRROR: ENCRYPTED VAULT + CLINIC PUBLISH
+   The caseload encrypts at rest (AES-GCM, passphrase-derived key);
+   Publish commits the clinic file to the PRIVATE GitHub data repo.
+   ============================================================ */
+/* ---- QR encoder (byte mode, EC-L, v1–9, mask 0) — verified by independent decode ---- */
+function qrMatrix(text) {
+  const bytes = [];
+  for (const ch of new TextEncoder().encode(String(text))) bytes.push(ch);
+  const CAP = [0, 17, 32, 53, 78, 106, 134, 154, 192, 230];
+  let ver = 0;
+  for (let v = 1; v <= 9; v++) if (bytes.length <= CAP[v]) { ver = v; break; }
+  if (!ver) return null;
+  const DATA_CW = [0, 19, 34, 55, 80, 108, 136, 156, 194, 232];
+  const ECC_PER = [0, 7, 10, 15, 20, 26, 18, 20, 24, 30];
+  const BLOCKS = [0, 1, 1, 1, 1, 1, 2, 2, 2, 2];
+  const size = 17 + 4 * ver;
+  const bits = [];
+  const push = (val, n) => { for (let i = n - 1; i >= 0; i--) bits.push((val >> i) & 1); };
+  push(4, 4); push(bytes.length, 8);
+  bytes.forEach(b => push(b, 8));
+  const cwTotal = DATA_CW[ver];
+  push(0, Math.min(4, cwTotal * 8 - bits.length));
+  while (bits.length % 8) bits.push(0);
+  const data = [];
+  for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(''), 2));
+  const PAD = [0xEC, 0x11];
+  for (let i = 0; data.length < cwTotal; i++) data.push(PAD[i % 2]);
+  const EXP = new Array(512), LOG = new Array(256);
+  for (let i = 0, x = 1; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  const gmul = (a, b) => (a && b) ? EXP[LOG[a] + LOG[b]] : 0;
+  const rsGen = (n) => { let g = [1];
+    for (let i = 0; i < n; i++) { const ng = new Array(g.length + 1).fill(0);
+      for (let j = 0; j < g.length; j++) { ng[j] ^= g[j]; ng[j + 1] ^= gmul(g[j], EXP[i]); }
+      g = ng; } return g; };
+  const rsEcc = (msg, n) => { const g = rsGen(n); const res = msg.concat(new Array(n).fill(0));
+    for (let i = 0; i < msg.length; i++) { const f = res[i]; if (!f) continue;
+      for (let j = 0; j < g.length; j++) res[i + j] ^= gmul(g[j], f); }
+    return res.slice(msg.length); };
+  const nb = BLOCKS[ver], per = Math.floor(cwTotal / nb), eccN = ECC_PER[ver];
+  const blocks = [], eccs = [];
+  for (let b = 0; b < nb; b++) { const chunk = data.slice(b * per, (b + 1) * per); blocks.push(chunk); eccs.push(rsEcc(chunk, eccN)); }
+  const seq = [];
+  for (let i = 0; i < per; i++) for (let b = 0; b < nb; b++) if (blocks[b][i] != null) seq.push(blocks[b][i]);
+  for (let i = 0; i < eccN; i++) for (let b = 0; b < nb; b++) seq.push(eccs[b][i]);
+  const M = Array.from({ length: size }, () => new Array(size).fill(null));
+  const set = (r, c, v) => { M[r][c] = v ? 1 : 0; };
+  const finder = (r, c) => { for (let dr = -1; dr <= 7; dr++) for (let dc = -1; dc <= 7; dc++) {
+    const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+    const on = dr >= 0 && dr <= 6 && dc >= 0 && dc <= 6 &&
+      (dr === 0 || dr === 6 || dc === 0 || dc === 6 || (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+    set(rr, cc, on); } };
+  finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+  for (let i = 8; i < size - 8; i++) { if (M[6][i] == null) set(6, i, i % 2 === 0); if (M[i][6] == null) set(i, 6, i % 2 === 0); }
+  const ALIGN = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46]][ver] || [];
+  const inFinder = (r, c) => (r <= 8 && c <= 8) || (r <= 8 && c >= size - 9) || (r >= size - 9 && c <= 8);
+  for (const r of ALIGN) for (const c of ALIGN) {
+    if (inFinder(r, c)) continue;
+    for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++)
+      set(r + dr, c + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+  }
+  set(size - 8, 8, 1);
+  for (let i = 0; i < 9; i++) { if (M[8][i] == null) M[8][i] = 0; if (M[i][8] == null) M[i][8] = 0; }
+  for (let i = 0; i < 8; i++) { if (M[8][size - 1 - i] == null) M[8][size - 1 - i] = 0; if (M[size - 1 - i][8] == null) M[size - 1 - i][8] = 0; }
+  if (ver >= 7) {
+    let d2 = ver << 12;
+    for (let i = 17; i >= 12; i--) if ((d2 >> i) & 1) d2 ^= 0x1F25 << (i - 12);
+    const bits18 = (ver << 12) | d2;
+    for (let i = 0; i < 18; i++) {
+      const bit = (bits18 >> i) & 1;
+      M[Math.floor(i / 3)][size - 11 + (i % 3)] = bit;
+      M[size - 11 + (i % 3)][Math.floor(i / 3)] = bit;
+    }
+  }
+  const total = seq.length * 8;
+  let bi = 0;
+  const bitAt = (i) => (seq[i >> 3] >> (7 - (i & 7))) & 1;
+  let col = size - 1, up = true;
+  while (col > 0) {
+    if (col === 6) col--;
+    for (let k = 0; k < size; k++) {
+      const r = up ? size - 1 - k : k;
+      for (const c of [col, col - 1]) {
+        if (M[r][c] != null) continue;
+        let v = bi < total ? bitAt(bi) : 0; bi++;
+        if ((r + c) % 2 === 0) v ^= 1;
+        M[r][c] = v;
+      }
+    }
+    up = !up; col -= 2;
+  }
+  const fmt = 0b01000;
+  let d = fmt << 10;
+  while (Math.floor(Math.log2(d || 1)) >= 10) d ^= 0x537 << (Math.floor(Math.log2(d)) - 10);
+  const fbits = ((fmt << 10) | d) ^ 0x5412;
+  const fb = (i) => (fbits >> i) & 1;
+  const posA = [[8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 7], [8, 8], [7, 8], [5, 8], [4, 8], [3, 8], [2, 8], [1, 8], [0, 8]];
+  posA.forEach(([r, c], i) => { M[r][c] = fb(14 - i); });
+  for (let i = 0; i < 7; i++) M[size - 1 - i][8] = fb(14 - i);
+  for (let i = 7; i < 15; i++) M[8][size - 15 + i] = fb(14 - i);
+  return M.map(row => row.map(v => !!v));
+}
+function drawQR(canvas, text, px) {
+  const m = qrMatrix(text);
+  if (!m) return false;
+  const q = 4, n = m.length, s = px || 6, W = (n + q * 2) * s;
+  canvas.width = W; canvas.height = W;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, W);
+  ctx.fillStyle = '#000';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++)
+    if (m[r][c]) ctx.fillRect((c + q) * s, (r + q) * s, s, s);
+  return true;
+}
+function b64enc(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+function b64dec(b) { const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+const Vault = {
+  key: null,
+  enabled() { return !!LS.getItem('rbts.vault'); },
+  async derive(pass, salt) {
+    const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  },
+  async setup(pass) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    this.key = await this.derive(pass, salt);
+    LS.setItem('rbts.vault', JSON.stringify({ salt: b64enc(salt) }));
+    await this.persist();
+    flash('Caseload is now encrypted at rest 🔒');
+  },
+  async unlock(pass) {
+    try {
+      const meta = JSON.parse(LS.getItem('rbts.vault'));
+      const key = await this.derive(pass, b64dec(meta.salt));
+      const enc = JSON.parse(LS.getItem('rbts.profilesEnc') || 'null');
+      if (enc) {
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(enc.iv) }, key, b64dec(enc.ct).buffer);
+        Profiles.list = JSON.parse(new TextDecoder().decode(pt));
+        Profiles.list.forEach(p => Profiles.migrate(p));
+        Profiles.activeId = LS.getItem('rbts.active') || (Profiles.list[0] && Profiles.list[0].id) || null;
+      }
+      this.key = key; return true;
+    } catch { return false; }
+  },
+  async persist() {
+    if (!this.key) return;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.key, new TextEncoder().encode(JSON.stringify(Profiles.list))));
+    LS.setItem('rbts.profilesEnc', JSON.stringify({ iv: b64enc(iv), ct: b64enc(ct) }));
+    LS.removeItem('rbts.profiles'); // plaintext never coexists with the vault
+  },
+  async remove() { this.key = null; LS.removeItem('rbts.vault'); LS.removeItem('rbts.profilesEnc'); Profiles.save(); flash('Vault removed — caseload stored plainly again'); },
+};
+/* the vault rides every save — plaintext writes stop the moment it exists */
+{
+  const plainSave = Profiles.save.bind(Profiles);
+  let vt = 0;
+  Profiles.save = function () {
+    try { if (this.activeId) LS.setItem('rbts.active', this.activeId); } catch {}
+    if (Vault.enabled()) { clearTimeout(vt); vt = setTimeout(() => Vault.persist(), 250); }
+    else plainSave();
+  };
+}
+function vaultGate() {
+  if (!Vault.enabled()) return Promise.resolve();
+  return new Promise((res) => {
+    const scrim = el('div', 'scrim');
+    const m = el('div', 'modal'); m.style.width = 'min(400px,96vw)';
+    m.innerHTML = `<h2>🔒 Unlock the caseload</h2>
+      <input id="vp" class="tin" type="password" placeholder="Passphrase" style="margin:8px 0">
+      <p id="vmsg" style="color:var(--reserve);font-weight:700;font-size:13px;min-height:18px;margin:0 0 8px"></p>`;
+    const r = el('div', 'row'); r.style.justifyContent = 'flex-end';
+    const go = el('button', 'btn btn-primary', 'Unlock');
+    go.onclick = async () => {
+      if (await Vault.unlock($('#vp', m).value)) { scrim.remove(); render(); res(); }
+      else { $('#vmsg', m).textContent = 'Wrong passphrase.'; $('#vp', m).value = ''; $('#vp', m).focus(); }
+    };
+    $('#vp', m) && (m.onkeydown = e => { if (e.key === 'Enter') go.click(); });
+    r.appendChild(go); m.appendChild(r); scrim.appendChild(m);
+    document.body.appendChild(scrim);
+    setTimeout(() => { const i = $('#vp', m); i && i.focus(); }, 80);
+  });
+}
+/* ---- Publish: the clinic file goes straight to the private repo — no downloads, no AirDrop ---- */
+const PubCfg = {
+  get() { try { return JSON.parse(LS.getItem('rbts.sync') || 'null'); } catch { return null; } },
+  set(v) {
+    if (v) { const old = this.get(); v.savedAt = (old && old.token === v.token && old.savedAt) ? old.savedAt : Date.now(); }
+    try { v ? LS.setItem('rbts.sync', JSON.stringify(v)) : LS.removeItem('rbts.sync'); } catch {}
+  },
+};
+/* GitHub tokens age out (~1 year) — start nagging a month early, every day, until rotated */
+function checkTokenAge() {
+  const c = PubCfg.get(); if (!c || !c.savedAt) return;
+  const days = (Date.now() - c.savedAt) / 864e5;
+  const left = Math.round(365 - days);
+  const warn = $('#tokWarn');
+  if (days >= 330) {
+    if (warn) { warn.classList.remove('hidden'); warn.textContent = `⚠ The GitHub keys expire ${left > 0 ? 'in ~' + left + ' days' : 'ANY DAY'} — make fresh ones and re-save (Security & sync), then reprint the office card.`; }
+    const today = new Date().toDateString();
+    if (LS.getItem('rbts.expWarnDay') !== today) {
+      try { LS.setItem('rbts.expWarnDay', today); } catch {}
+      flash('⚠ Clinic sync keys expire soon — see the note under the buttons');
+    }
+  } else if (warn) warn.classList.add('hidden');
+}
+async function shaHex(s) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+const MASTER_HASH = '0967cb14832c20ddb17b033df5de72cf413bb12df39e001dc15b201432963fb9'; // owner's override — the code itself is written nowhere
+async function ghPut(cfg, path, bytes, msg) {
+  const head = { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28' };
+  const url = `https://api.github.com/repos/${cfg.repo}/contents/${path}`;
+  let sha;
+  const cur = await fetch(url, { headers: head });
+  if (cur.ok) { try { sha = (await cur.json()).sha; } catch {} }
+  const put = await fetch(url, { method: 'PUT', headers: { ...head, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: msg, content: b64enc(bytes), ...(sha ? { sha } : {}) }) });
+  if (!put.ok) throw new Error('GitHub said ' + put.status);
+}
+async function publishClinic() {
+  const cfg = PubCfg.get();
+  if (!cfg) { flash('Connect to the clinic first — 🔐 Security & sync'); return; }
+  const ready = Profiles.list.filter(p => p.code && p.code.name && p.tools.length);
+  if (!ready.length) { flash('Nothing ready — a client needs a code and at least one prescribed tool.'); return; }
+  const allHits = [];
+  ready.forEach(p => phiScan(p).forEach(h => allHits.push({ where: `${p.code.emoji} ${p.code.name} → ${h.where}`, match: h.match })));
+  const doIt = async () => {
+    const prog = el('div', 'flash', 'Publishing to the clinic repo…'); document.body.appendChild(prog);
+    try {
+      const files = [], used = new Set();
+      const manifest = { app: 'rbt-tools', kind: 'clinic', version: APP_VERSION, exported: Date.now(), profiles: [] };
+      for (const p of ready) { const j = await buildProfileFiles(p, files, used); manifest.profiles.push({ slug: p.code.slug, name: p.code.name, ts: j.ts }); }
+      files.push({ path: 'clinic.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+      /* the shared CLINIC LIBRARY rides inside the same zip */
+      const lib = ClinicVis.list();
+      {
+        const items = [];
+        for (const cv of lib) {
+          const rec = await SDB.get(cv.img); if (!rec) continue;
+          const path = `Clinic Library/${safeName(cv.label, 'picture')}-${cv.img}.jpg`;
+          files.push({ path, data: new Uint8Array(await rec.blob.arrayBuffer()) });
+          items.push({ path, label: cv.label, cat: cv.cat, tags: cv.tags || [] });
+        }
+        if (items.length) files.push({ path: 'library.json', data: new TextEncoder().encode(JSON.stringify({ ts: ClinicVis.ts(), items }, null, 2)) });
+      }
+      const blob = zipStore(files);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      await ghPut(cfg, 'clinic.zip', bytes, `clinic update ${todayStr()} by ${(Profiles.active() || { updatedBy: 'BCBA' }).updatedBy || 'BCBA'}`);
+      /* the tablet PIN travels alongside — hashed, clinic-decided, RBTs have no say */
+      const pin = LS.getItem('rbts.tabletPin') || '7373';
+      const conf = { app: 'rbt-tools', kind: 'config', updated: Date.now(), pinHash: await shaHex('rbt·' + pin) };
+      await ghPut(cfg, 'config.json', new TextEncoder().encode(JSON.stringify(conf, null, 2)), 'clinic config');
+      ready.forEach(p => { p.updated = todayStr(); p.draft = false; });
+      Profiles.save();
+      try { LS.setItem('rbts.lastPublish', String(Date.now())); } catch {}
+      refreshExportName();
+      flash(`Saved to clinic ✓ ${ready.length} client${ready.length === 1 ? '' : 's'}${lib.length ? ' + ' + lib.length + ' library pictures' : ''} — tablets update themselves`);
+    } catch (e) { flash('Publish failed: ' + ((e && e.message) || 'no connection')); }
+    finally { prog.remove(); }
+  };
+  if (allHits.length) return phiGate(allHits, 'Everything being published', doIt);
+  doIt();
+}
+/* pull the latest clinic file back INTO this app — how library + colleagues' edits arrive */
+async function pullFromClinic() {
+  const cfg = PubCfg.get(); if (!cfg) { flash('Connect first — save the repo and token'); return; }
+  const prog = el('div', 'flash', 'Pulling latest from the clinic…'); document.body.appendChild(prog);
+  try {
+    const r = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/clinic.zip`,
+      { headers: { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28', 'Accept': 'application/vnd.github.raw+json' } });
+    if (!r.ok) throw new Error(r.status === 404 ? 'nothing published yet' : 'GitHub said ' + r.status);
+    const buf = await r.arrayBuffer();
+    await importZip({ arrayBuffer: async () => buf });
+  } catch (e) { flash('Pull failed: ' + ((e && e.message) || 'network')); }
+  finally { prog.remove(); }
+}
+/* the shared library editor — sidebar-level, because it belongs to the whole clinic */
+function openClinicLibrary() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal'); m.style.width = 'min(760px,96vw)';
+  m.innerHTML = `<h2>🖼 Clinic library</h2>
+    <p style="color:var(--muted);font-weight:700;font-size:12.5px;margin:-4px 0 12px">Pictures every client's tablet gets preloaded. Organize them into the picker's tabs, tag them for search. Publishes with <b>Save to clinic</b>; shared with every Client Profiles instance.</p>`;
+  const list = el('div', 'row'); list.style.cssText = 'gap:14px;align-items:flex-start';
+  const draw = () => {
+    list.innerHTML = '';
+    ClinicVis.items.forEach((g, i) => {
+      const f = el('div', 'field');
+      f.appendChild(mkSlot(() => g.img, (id, name) => { g.img = id; if (!g.label && name) g.label = cleanName(name); ClinicVis.save(); }, {}));
+      const li = el('input', 'tin'); li.placeholder = 'Label'; li.maxLength = 24; li.value = g.label || ''; li.style.width = '118px';
+      li.oninput = () => { g.label = li.value; ClinicVis.save(); };
+      f.appendChild(li);
+      f.appendChild(mkSeg([['places', 'Place'], ['activities', 'Activity'], ['rewards', 'Reward'], ['people', 'People']], g.cat, v => { g.cat = v; ClinicVis.save(); }));
+      const ti = el('input', 'tin'); ti.placeholder = 'tags, comma,separated'; ti.maxLength = 80; ti.value = (g.tags || []).join(', '); ti.style.cssText = 'width:118px;font-size:11.5px';
+      ti.oninput = () => { g.tags = ti.value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8); ClinicVis.save(); };
+      f.appendChild(ti);
+      const rm = el('button', 'btn btn-sm btn-ghost', 'Remove');
+      rm.onclick = () => { ClinicVis.items.splice(i, 1); ClinicVis.save(); gcImages(); draw(); };
+      f.appendChild(rm);
+      list.appendChild(f);
+    });
+    const add = el('button', 'icon-btn', '<svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg>');
+    add.style.alignSelf = 'center';
+    add.onclick = () => { ClinicVis.items.push({ img: null, label: '', cat: 'activities', tags: [] }); ClinicVis.save(); draw(); };
+    list.appendChild(add);
+  };
+  draw();
+  m.appendChild(list);
+  const bulk = el('button', 'btn btn-sm btn-ghost', '＋ Add a whole folder'); bulk.style.marginTop = '12px';
+  const binp = el('input'); binp.type = 'file'; binp.setAttribute('webkitdirectory', ''); binp.className = 'hidden';
+  bulk.onclick = () => binp.click();
+  binp.onchange = async () => {
+    const imgs = [...binp.files].filter(f2 => f2.type.startsWith('image/')).slice(0, 60);
+    binp.value = ''; if (!imgs.length) return flash('No pictures in that folder.');
+    const prog = el('div', 'flash', `Adding ${imgs.length}…`); document.body.appendChild(prog);
+    try { for (const f2 of imgs) { const blob = await processImage(f2); const id = await storeImage(blob);
+      ClinicVis.items.push({ img: id, label: cleanName(f2.name.replace(/\.[^.]+$/, '')), cat: 'activities', tags: [] }); }
+      ClinicVis.save(); draw(); } finally { prog.remove(); }
+  };
+  m.append(bulk, binp);
+  const r = el('div', 'row'); r.style.cssText = 'justify-content:flex-end;margin-top:14px';
+  const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => { scrim.remove(); };
+  r.appendChild(ok); m.appendChild(r); scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
+/* the office card: scan → tablet joins. Print it, drawer it, done. */
+function printOfficeCard(code) {
+  $$('.qr-print').forEach(n => n.remove());
+  const card = el('div', 'qr-print');
+  card.innerHTML = `<div style="max-width:400px;margin:0 auto;padding:28px;border:2px dashed #999;border-radius:16px;text-align:center;font-family:var(--body)">
+    <h2 style="font-family:var(--display);margin:0 0 4px">RBT Tools — Clinic Sync</h2>
+    <p style="font-weight:700;color:#555;margin:0 0 14px;font-size:13px">Scan with the tablet · keep this card in the office</p>
+    <canvas id="qrPrintCv" style="width:240px;height:240px;image-rendering:pixelated"></canvas>
+    <ol style="text-align:left;font-size:13px;font-weight:600;line-height:1.6;margin:14px 0 0;padding-left:20px">
+      <li>Open RBT Tools on the tablet</li>
+      <li>Enter the PIN</li>
+      <li>Settings → <b>Join clinic sync</b> → <b>Scan</b> this card</li>
+    </ol>
+    <p style="font-size:10px;color:#888;margin:12px 0 0;word-break:break-all">${esc(code)}</p>
+  </div>`;
+  document.body.appendChild(card);
+  drawQR($('#qrPrintCv', card), code, 6);
+  const bar = el('div', 'row'); bar.className = 'qr-print-bar'; bar.style.cssText = 'position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:99;gap:10px;background:var(--surface);padding:10px 14px;border-radius:999px;box-shadow:var(--shadow-lg)';
+  const go = el('button', 'btn btn-primary btn-sm', 'Print now');
+  go.onclick = () => window.print();
+  const done = el('button', 'btn btn-ghost btn-sm', 'Done');
+  done.onclick = () => { card.remove(); bar.remove(); };
+  bar.append(go, done); card.appendChild(bar);
+}
+function openSecurity() {
+  const scrim = el('div', 'scrim');
+  const m = el('div', 'modal'); m.style.width = 'min(560px,96vw)';
+  m.appendChild(el('h2', '', '🔐 Security & sync — experimental'));
+  const cfg = PubCfg.get() || { repo: '', token: '' };
+  const connected = !!(cfg.repo && cfg.token);
+  const f1 = el('div', 'field'); f1.appendChild(el('span', 'label', 'Clinic storage (already filled in — leave as is)'));
+  const rIn = el('input', 'tin'); rIn.placeholder = 'clinicname/rbt-clinic-data'; rIn.value = cfg.repo || 'RBT-Tools-and-stuffs/rbt-clinic-data';
+  f1.appendChild(rIn);
+  const f2 = el('div', 'field'); f2.style.marginTop = '10px';
+  f2.appendChild(el('span', 'label', 'Write key — from the clinic lead'));
+  const tIn = el('input', 'tin'); tIn.type = 'password'; tIn.placeholder = 'github_pat_…'; tIn.value = cfg.token || '';
+  /* the key shows itself only while it's actually being edited */
+  tIn.onfocus = () => { if (!tIn.readOnly) tIn.type = 'text'; };
+  tIn.onblur = () => { tIn.type = 'password'; };
+  f2.appendChild(tIn);
+  const saveB = el('button', 'btn btn-sm btn-primary', 'Save connection'); saveB.style.marginTop = '10px';
+  saveB.onclick = () => { const v = { repo: rIn.value.trim(), token: tIn.value.trim() };
+    if (!/^[\w.-]+\/[\w.-]+$/.test(v.repo) || !v.token) { flash('Repo looks like owner/name, and the key can’t be empty'); return; }
+    PubCfg.set(v); flash('Connection saved'); lockConn(); };
+  /* once connected, these are LOCKED — a deliberate unlock stands between fingers and the plumbing */
+  const editB = el('button', 'btn btn-sm btn-ghost', '🔒 Edit connection…'); editB.style.marginTop = '10px';
+  const lockConn = () => { rIn.readOnly = true; tIn.readOnly = true; tIn.type = 'password';
+    rIn.style.opacity = tIn.style.opacity = '.55'; saveB.classList.add('hidden'); editB.classList.remove('hidden'); };
+  const unlockConn = () => { rIn.readOnly = false; tIn.readOnly = false;
+    rIn.style.opacity = tIn.style.opacity = ''; saveB.classList.remove('hidden'); editB.classList.add('hidden'); };
+  editB.onclick = () => confirm2('Edit the clinic connection?', 'Only change this if the clinic lead says so — a wrong value disconnects every Save.', unlockConn, 'Edit');
+  if (connected) lockConn(); else { editB.classList.add('hidden'); }
+  const testB = el('button', 'btn btn-sm btn-ghost', 'Test connection'); testB.style.marginTop = '10px'; testB.style.marginLeft = '8px';
+  testB.onclick = async () => {
+    const v = PubCfg.get(); if (!v) { flash('Save the connection first'); return; }
+    testB.disabled = true;
+    try {
+      const r = await fetch(`https://api.github.com/repos/${v.repo}`, { headers: { 'Authorization': 'Bearer ' + v.token, 'X-GitHub-Api-Version': '2022-11-28' } });
+      if (r.ok) { const j = await r.json(); flash(j.private ? 'Connected ✓ — repo is PRIVATE, perfect' : '⚠ Connected, but that repo is PUBLIC — make it private!'); }
+      else flash(r.status === 404 ? 'GitHub says 404 — wrong repo name, or the token can’t see it' : 'GitHub said ' + r.status);
+    } catch { flash('No connection to GitHub'); }
+    finally { testB.disabled = false; }
+  };
+  /* the tablet PIN — clinic property, distributed with every Publish */
+  const fPin = el('div', 'field'); fPin.style.marginTop = '14px';
+  fPin.appendChild(el('span', 'label', 'Tablet PIN (all RBT tablets · they cannot change it)'));
+  const pinIn = el('input', 'tin'); pinIn.maxLength = 8;
+  pinIn.style.cssText = 'width:130px;letter-spacing:4px;text-align:center;font-size:17px';
+  pinIn.type = 'password'; // hidden unless you're actually editing it
+  pinIn.onfocus = () => { pinIn.type = 'text'; };
+  pinIn.onblur = () => { pinIn.type = 'password'; };
+  pinIn.value = LS.getItem('rbts.tabletPin') || '7373';
+  pinIn.oninput = () => { const v = pinIn.value.replace(/\D/g, ''); pinIn.value = v; if (v.length >= 4) try { LS.setItem('rbts.tabletPin', v); } catch {} };
+  const pinNote = el('span', 'sub', 'Ships hashed with the next Publish; tablets adopt it on their next sync.');
+  const pinRow = el('div', 'row'); pinRow.append(pinIn, pinNote);
+  fPin.appendChild(pinRow);
+  const pubB = el('button', 'btn btn-primary', '💾 Save to clinic now'); pubB.style.marginTop = '14px';
+  pubB.onclick = publishClinic;
+  const pullB = el('button', 'btn btn-ghost btn-sm', '⭳ Pull latest'); pullB.style.cssText = 'margin-top:14px;margin-left:8px';
+  pullB.title = 'Fetch colleagues’ latest saves + the clinic library into this app';
+  pullB.onclick = pullFromClinic;
+  const div1 = el('div'); div1.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
+  const f3 = el('div', 'field');
+  f3.appendChild(el('span', 'label', 'Office card — paste the tablet key (read-only), then print'));
+  const roIn = el('input', 'tin'); roIn.placeholder = 'paste the tablet key here';
+  const outBox = el('textarea', 'tin'); outBox.readOnly = true; outBox.style.cssText = 'min-height:64px;font-size:12px;margin-top:8px';
+  const qrHold = el('div'); qrHold.style.cssText = 'margin-top:10px;text-align:center';
+  roIn.oninput = () => {
+    outBox.value = roIn.value.trim() && rIn.value.trim() ? `rbts1|${rIn.value.trim()}|${roIn.value.trim()}` : '';
+    qrHold.innerHTML = '';
+    if (outBox.value) { /* the whole setup, one scannable square */
+      const cv = el('canvas'); cv.style.cssText = 'width:150px;height:150px;image-rendering:pixelated;border:1px solid var(--line);border-radius:10px';
+      if (drawQR(cv, outBox.value, 4)) qrHold.appendChild(cv);
+    }
+  };
+  const cpB = el('button', 'btn btn-sm btn-ghost', 'Copy code');
+  cpB.onclick = async () => { if (!outBox.value) return; try { await navigator.clipboard.writeText(outBox.value); flash('Copied'); } catch { flash('Copy blocked'); } };
+  const prB = el('button', 'btn btn-sm btn-primary', '🖨 Print office card');
+  prB.onclick = () => { if (!outBox.value) { flash('Paste the read-only token first'); return; } printOfficeCard(outBox.value); };
+  const btnRow = el('div', 'row'); btnRow.style.marginTop = '8px'; btnRow.append(cpB, prB);
+  f3.append(roIn, outBox, qrHold, btnRow);
+  const div2 = el('div'); div2.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
+  const vRow = el('div', 'row');
+  const vB = el('button', 'btn btn-sm ' + (Vault.enabled() ? 'btn-ghost' : 'btn-primary'), Vault.enabled() ? '🔒 Vault is ON — change passphrase' : '🔒 Encrypt caseload (set passphrase)');
+  vB.onclick = () => {
+    const pass = prompt(Vault.enabled() ? 'New passphrase (this re-encrypts everything):' : 'Choose a passphrase — it will be required every time the app opens:');
+    if (pass && pass.length >= 6) Vault.setup(pass).then(() => { scrim.remove(); });
+    else if (pass != null) flash('At least 6 characters');
+  };
+  vRow.appendChild(vB);
+  /* no casual off-switch: destroying the vault demands the master code (held by the app's owner) */
+  if (Vault.enabled()) {
+    const vX = el('button', 'btn btn-sm btn-ghost', 'Destroy vault…');
+    vX.onclick = () => {
+      const code = prompt('Destroying the vault stores the caseload UNENCRYPTED again.\nEnter the master code to continue:');
+      if (code == null) return;
+      shaHex('rbt·' + code.trim()).then(h => {
+        if (h === MASTER_HASH) { Vault.remove(); scrim.remove(); }
+        else flash('Not the master code — the vault stays');
+      });
+    };
+    vRow.appendChild(vX);
+  }
+  m.append(f1, f2, saveB, editB, testB, fPin, pubB, pullB, div1, f3, div2, vRow,
+    el('p', '', '<span style="color:var(--muted);font-weight:700;font-size:12px">One-way by design: tablets read, only this app writes. Images in the local library are not yet encrypted — the vault covers the caseload database.</span>'));
+  const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '12px';
+  const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
+  r.appendChild(ok); m.appendChild(r); scrim.appendChild(m);
+  scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+}
+
 /* ---------- init ---------- */
 (async function init() {
   await SDB.open();
   Profiles.load();
+  Authors.load();
+  ClinicVis.load();
+  await vaultGate(); // encrypted caseloads open only with the passphrase
   gcImages();
+  checkTokenAge();
+  setInterval(checkTokenAge, 6 * 3600 * 1000);
   $('#newBtn').onclick = newProfile;
   $('#importBtn').onclick = () => $('#importInp').click();
   const cb = $('#clinicBtn'); if (cb) cb.onclick = exportClinic;
   const nb = $('#newsBtn'); if (nb) nb.onclick = openWhatsNew;
-  const bb = $('#baaBtn'); if (bb) bb.onclick = openBaaBrief;
   const fbB = $('#fbBtn'); if (fbB) fbB.onclick = openFeedback;
+  const sb2 = $('#secBtn'); if (sb2) sb2.onclick = openSecurity;
+  const gb2 = $('#guideBtn'); if (gb2) gb2.onclick = openGuideCP;
+  const lb2 = $('#libBtn'); if (lb2) lb2.onclick = openClinicLibrary;
+  if (!LS.getItem('rbts.setupDone')) openSetupWizard(); // sits under the first-run ack; two steps, done
   const vb = $('#verBadge'); if (vb) vb.textContent = APP_VERSION_LABEL; // the badge can never drift again
+  window.__mirror = { Vault, PubCfg, publishClinic, phiScan };
   try {
     const seen = LS.getItem('rbts.seenVer');
     if (seen && seen !== APP_VERSION_LABEL) setTimeout(() => flash(`Updated to ${APP_VERSION_LABEL} — tap “What's new” below`), 800);
