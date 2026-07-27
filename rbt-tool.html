@@ -4720,6 +4720,14 @@ Screens.calm = (scr) => {
   const exit = el('button', 'calm-exit adult-only', 'Done');
   exit.onclick = () => show('home');
   c.append(exit, body, sub, tabs); scr.appendChild(c);
+  { /* the BCBA's calm note — for the RBT's eyes, tucked out of the child's way */
+    const tn = toolNote('calm');
+    if (tn && tn.nodeType === 1) {
+      const hold2 = el('div', 'adult-only');
+      hold2.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:44;max-width:min(520px,86vw)';
+      hold2.appendChild(tn); c.appendChild(hold2);
+    }
+  }
   const ACT = [['breathe', 'Breathe'], ['drift', 'Drift'], ['trace', 'Trace']];
   ACT.forEach(([k, lab]) => {
     const b = el('button', 'calm-tab kid-safe' + (st.activity === k ? ' on' : ''), lab);
@@ -5899,12 +5907,13 @@ function openJoinModal(after) {
   };
   $('#scc', m2).onclick = closeJoin;
   $('#scy', m2).onclick = () => connect($('#scIn', m2).value);
-  /* one tap, point at the card, done — wherever you are in the clinic */
-  if ('BarcodeDetector' in window && navigator.mediaDevices) {
+  /* one tap, point at the card, done — the button is ALWAYS there */
+  {
     const hold = $('#scScanHold', m2);
     const scanB = el('button', 'btn btn-primary btn-block', '📷 Scan the office card');
     scanB.style.marginBottom = '12px';
     scanB.onclick = async () => {
+      if (!('BarcodeDetector' in window) || !navigator.mediaDevices) { flash('This browser can\u2019t scan QR codes \u2014 use the tablet\u2019s camera, or paste the code'); return; }
       try {
         const det = new window.BarcodeDetector({ formats: ['qr_code'] });
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -6424,9 +6433,17 @@ const Sync = {
           }
         }
       } catch {}
-      const meta = await this.api('contents/clinic.zip', { headers: { Accept: 'application/vnd.github+json' } });
-      if (!meta) { if (!quiet) flash('No clinic file published yet'); return; }
-      const sha = (await meta.json()).sha;
+      let sha = null, present = true;
+      try {
+        const meta = await this.api('contents/clinic.zip', { headers: { Accept: 'application/vnd.github+json' } });
+        if (!meta) present = false; else sha = (await meta.json()).sha;
+      } catch { /* big zips refuse the JSON route — the folder listing still hands us the sha */
+        const dirR = await this.api('contents/', { headers: { Accept: 'application/vnd.github+json' } });
+        const list2 = dirR ? await dirR.json() : [];
+        const entry = Array.isArray(list2) ? list2.find(f => f.name === 'clinic.zip') : null;
+        if (!entry) present = false; else sha = entry.sha;
+      }
+      if (!present) { if (!quiet) flash('No clinic file published yet'); return; }
       if (sha && sha === LS.getItem('rbt.syncSha')) { if (!quiet) flash('Already up to date ✓'); return; }
       const raw = await this.api('contents/clinic.zip', { headers: { Accept: 'application/vnd.github.raw+json' } });
       const buf = await raw.arrayBuffer();
@@ -6474,7 +6491,7 @@ const Sync = {
     finally { this.busy = false; }
   },
 };
-setInterval(() => { if (SyncCfg.get() && navigator.onLine !== false) Sync.pull(true); }, 5 * 60 * 1000);
+setInterval(() => { if (SyncCfg.get() && navigator.onLine !== false) Sync.pull(true); }, 2 * 60 * 1000);
 /* a tablet waking up is a tablet about to be used — freshen quietly */
 document.addEventListener('visibilitychange', () => { if (!document.hidden && SyncCfg.get()) Sync.pull(true); });
 
