@@ -523,6 +523,13 @@ function mkSlot(getId, setId, opts = {}) {
     lib.onclick = (e) => { e.stopPropagation(); openBundledPicker((id, label) => { setId('b:' + id, label); paint(); markDirty(); }); };
     s.appendChild(lib);
   }
+  /* the clinic's shared library — presets pull straight from it */
+  if (opts.lib !== false && typeof ClinicVis !== 'undefined' && ClinicVis.list().some(g => g.img)) {
+    const cl = el('button', 'lib', '🖼');
+    cl.style.right = '34px'; cl.title = 'Pick from the clinic library';
+    cl.onclick = (e) => { e.stopPropagation(); openClinicPicker((id, label) => { setId(id, label); paint(); markDirty(); }); };
+    s.appendChild(cl);
+  }
   paint();
   return s;
 }
@@ -1601,7 +1608,7 @@ function stripForLabel(name) {
   let s = name.replace(/\.[^.]+$/, '').replace(/\(\s*\d+\s*m(in)?\s*\)/ig, '').replace(/^[\s\d._-]+/, '').trim().slice(0, 24);
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-async function importZip(file) {
+async function importZip(file, opts = {}) {
   const prog = el('div', 'flash', 'Reading folder…'); document.body.appendChild(prog);
   try {
     const entries = (await unzipAll(await file.arrayBuffer()))
@@ -1643,7 +1650,7 @@ async function importZip(file) {
     const confs = entries.filter(e => baseName(e.path).toLowerCase() === 'client.json')
       .sort((a, b) => a.path.split('/').length - b.path.split('/').length);
     if (!confs.length) throw new Error('No client.json in that zip — only folders exported by the Client Profiles app can be opened here.');
-    if (confs.length > 1) { await importClinic(confs, entries, prog); return; }
+    if (confs.length > 1 || opts.silent) { await importClinic(confs, entries, prog, opts); return; }
     const { p, ts: singleTs } = await parseClientFolder(confs[0], entries);
     { const t2 = Tombs.get()[p.code.slug];
       if (t2 && t2 > (singleTs || 0)) { prog.remove(); render(); flash(`${p.code.emoji} ${p.code.name} was deleted here — not re-importing (newer delete wins)`); return; }
@@ -1658,7 +1665,7 @@ async function importZip(file) {
   }
 }
 /* a clinic file: merge every profile — for each client, the NEWER version wins */
-async function importClinic(confs, entries, prog) {
+async function importClinic(confs, entries, prog, opts = {}) {
   let updated = 0, kept = 0, failed = 0;
   const names = [];
   for (const conf of confs) {
@@ -1676,7 +1683,16 @@ async function importClinic(confs, entries, prog) {
     } catch { failed++; }
   }
   Profiles.save(); gcImages();
-  prog.remove(); render();
+  prog.remove();
+  if (opts.silent) { /* background pull: data lands now, the repaint waits for a pause */
+    if (updated) {
+      if (Date.now() - (window.__lastTouch || 0) < 20000 || document.querySelector('.scrim')) {
+        window.__pendRe = 1; flash(`\u2601\uFE0F ${updated} update${updated === 1 ? '' : 's'} from colleagues \u2014 will show when you pause`);
+      } else { render(); flash(`\u2601\uFE0F Caseload refreshed \u2014 ${updated} from colleagues`); }
+    }
+    return;
+  }
+  render();
   const m = el('div', 'modal', `<h2>Clinic file merged</h2>
     <div style="font-weight:600;line-height:1.7;color:var(--ink)">
     <p><b>${updated}</b> client${updated === 1 ? '' : 's'} updated${names.length ? ': ' + names.map(esc).join(', ') : ''}.</p>
@@ -1987,9 +2003,10 @@ function openSetupWizard() {
   };
   go.onclick = () => connectWith(tIn.value);
   r.append(skip, go); m.appendChild(r);
-  if ('BarcodeDetector' in window && navigator.mediaDevices) {
+  {
     const camB = el('button', 'btn btn-sm btn-ghost', '📷 Scan the setup card'); camB.style.margin = '4px 0 10px';
     camB.onclick = async () => {
+      if (!('BarcodeDetector' in window) || !navigator.mediaDevices) { flash('This browser can\u2019t scan QR codes \u2014 paste the key instead'); return; }
       try {
         const det = new window.BarcodeDetector({ formats: ['qr_code'] });
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -2234,7 +2251,7 @@ async function shaHex(s) {
   return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 const MASTER_HASH = '0967cb14832c20ddb17b033df5de72cf413bb12df39e001dc15b201432963fb9'; // owner's override — the code itself is written nowhere
-async function ghPut(cfg, path, bytes, msg) {
+async function ghPut(cfg, path, bytes, msg, retry) {
   const head = { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28' };
   const url = `https://api.github.com/repos/${cfg.repo}/contents/${path}`;
   let sha;
@@ -2242,6 +2259,14 @@ async function ghPut(cfg, path, bytes, msg) {
   if (cur.ok) { try { sha = (await cur.json()).sha; } catch {} }
   const put = await fetch(url, { method: 'PUT', headers: { ...head, 'Content-Type': 'application/json' },
     body: JSON.stringify({ message: msg, content: b64enc(bytes), ...(sha ? { sha } : {}) }) });
+  if (put.status === 409 && retry) { /* raced a colleague — refresh the sha, write once more */
+    let sha2; const cur2 = await fetch(url, { headers: head });
+    if (cur2.ok) { try { sha2 = (await cur2.json()).sha; } catch {} }
+    const put2 = await fetch(url, { method: 'PUT', headers: { ...head, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, content: b64enc(bytes), ...(sha2 ? { sha: sha2 } : {}) }) });
+    if (!put2.ok) throw new Error('GitHub said ' + put2.status);
+    return;
+  }
   if (!put.ok) throw new Error('GitHub said ' + put.status);
 }
 async function publishClinic() {
@@ -2254,12 +2279,15 @@ async function publishClinic() {
   const doIt = async () => {
     const prog = el('div', 'flash', 'Publishing to the clinic repo…'); document.body.appendChild(prog);
     try {
+      try { await cpSync(true); } catch {} /* merge colleagues' newer work FIRST — two authors, zero clobber */
+      const ready2 = Profiles.list.filter(p => p.code && p.code.name && p.tools.length);
+      const buildAndPut = async () => {
       const files = [], used = new Set();
       const tombs = Tombs.get();
       Object.entries(tombs).forEach(([s, ts]) => { if (Date.now() - ts > 400 * 864e5) delete tombs[s]; });
       Tombs.set(tombs);
       const manifest = { app: 'rbt-tools', kind: 'clinic', version: APP_VERSION, exported: Date.now(), profiles: [], deleted: tombs };
-      for (const p of ready) { const j = await buildProfileFiles(p, files, used); manifest.profiles.push({ slug: p.code.slug, name: p.code.name, ts: j.ts }); }
+      for (const p of ready2) { const j = await buildProfileFiles(p, files, used); manifest.profiles.push({ slug: p.code.slug, name: p.code.name, ts: j.ts }); }
       files.push({ path: 'clinic.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
       /* the shared CLINIC LIBRARY rides inside the same zip */
       const lib = ClinicVis.list().filter(cv => (cv.label || '').trim() && cv.cat);
@@ -2280,15 +2308,18 @@ async function publishClinic() {
       const blob = zipStore(files);
       const bytes = new Uint8Array(await blob.arrayBuffer());
       await ghPut(cfg, 'clinic.zip', bytes, `clinic update ${todayStr()} by ${(Profiles.active() || { updatedBy: 'BCBA' }).updatedBy || 'BCBA'}`);
+      };
+      try { await buildAndPut(); }
+      catch (e2) { if (/409/.test(String(e2 && e2.message))) { await cpSync(true); await buildAndPut(); } else throw e2; } /* a colleague saved mid-save: theirs merges in, ours goes out again */
       /* the tablet PIN travels alongside — hashed, clinic-decided, RBTs have no say */
       const pin = LS.getItem('rbts.tabletPin') || '7373';
       const conf = { app: 'rbt-tools', kind: 'config', updated: Date.now(), pinHash: await shaHex('rbt·' + pin) };
-      await ghPut(cfg, 'config.json', new TextEncoder().encode(JSON.stringify(conf, null, 2)), 'clinic config');
-      ready.forEach(p => { p.updated = todayStr(); p.draft = false; });
+      await ghPut(cfg, 'config.json', new TextEncoder().encode(JSON.stringify(conf, null, 2)), 'clinic config', true);
+      ready2.forEach(p => { p.updated = todayStr(); p.draft = false; });
       Profiles.save();
       try { LS.setItem('rbts.lastPublish', String(Date.now())); } catch {}
       refreshExportName();
-      flash(`Saved to clinic ✓ ${ready.length} client${ready.length === 1 ? '' : 's'}${lib.length ? ' + ' + lib.length + ' library pictures' : ''} — tablets update themselves`);
+      flash(`Saved to clinic ✓ ${ready2.length} client${ready2.length === 1 ? '' : 's'}${lib.length ? ' + ' + lib.length + ' library pictures' : ''} — tablets update themselves`);
     } catch (e) { flash('Publish failed: ' + ((e && e.message) || 'no connection')); }
     finally { prog.remove(); }
   };
@@ -2307,6 +2338,66 @@ async function pullFromClinic() {
     await importZip({ arrayBuffer: async () => buf });
   } catch (e) { flash('Pull failed: ' + ((e && e.message) || 'network')); }
   finally { prog.remove(); }
+}
+/* the quiet keeper: colleagues' saves flow into THIS instance on their own */
+window.__lastTouch = 0;
+document.addEventListener('input', () => { window.__lastTouch = Date.now(); }, true);
+setInterval(() => { if (window.__pendRe && Date.now() - (window.__lastTouch || 0) > 20000 && !document.querySelector('.scrim')) { window.__pendRe = 0; render(); } }, 5000);
+async function cpSync(quiet = true) {
+  if (cpSync.busy) return; const cfg = PubCfg.get(); if (!cfg) return;
+  cpSync.busy = true;
+  try {
+    const head = { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28' };
+    const url = `https://api.github.com/repos/${cfg.repo}/contents/clinic.zip`;
+    let sha = null;
+    try {
+      const meta = await fetch(url, { headers: { ...head, Accept: 'application/vnd.github+json' } });
+      if (meta.status === 404) return; if (!meta.ok) throw new Error('meta');
+      sha = (await meta.json()).sha;
+    } catch { /* zips >1 MB refuse the JSON route — read the sha off the folder listing */
+      const dirR = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/`, { headers: { ...head, Accept: 'application/vnd.github+json' } });
+      if (!dirR.ok) return;
+      const list2 = await dirR.json();
+      const entry = Array.isArray(list2) ? list2.find(f => f.name === 'clinic.zip') : null;
+      if (!entry) return; sha = entry.sha;
+    }
+    if (sha && sha === LS.getItem('rbts.pullSha')) return;
+    const raw = await fetch(url, { headers: { ...head, Accept: 'application/vnd.github.raw+json' } });
+    if (!raw.ok) return;
+    const buf = await raw.arrayBuffer();
+    await importZip({ arrayBuffer: async () => buf }, { silent: true });
+    try { LS.setItem('rbts.pullSha', sha || ''); } catch {}
+  } catch (e) { if (!quiet) flash('Sync check failed: ' + ((e && e.message) || 'network')); }
+  finally { cpSync.busy = false; }
+}
+setInterval(() => { if (PubCfg.get() && document.visibilityState !== 'hidden' && navigator.onLine !== false) cpSync(true); }, 90 * 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && PubCfg.get()) cpSync(true); });
+/* presets can borrow any library picture */
+function openClinicPicker(onPick) {
+  const scrim = el('div', 'scrim');
+  const modal = el('div', 'modal'); modal.style.width = 'min(680px,96vw)';
+  modal.innerHTML = `<h2>🖼 Clinic library</h2><p style="color:var(--muted);font-weight:700;font-size:12.5px;margin:-6px 0 12px">Shared pictures the whole clinic curates — pick one for this spot.</p>`;
+  const search = el('input', 'tin'); search.placeholder = 'Search labels, tags, tabs…'; search.style.marginBottom = '12px';
+  const grid = el('div', 'bpick-grid');
+  modal.append(search, grid); scrim.appendChild(modal);
+  scrim.onclick = (e) => { if (e.target === scrim) scrim.remove(); };
+  document.body.appendChild(scrim);
+  const draw = async () => {
+    grid.innerHTML = '';
+    const q = search.value.trim().toLowerCase();
+    for (const g of ClinicVis.list()) {
+      if (!g.img || !(g.label || '').trim()) continue;
+      const hay = (g.label + ' ' + (g.tags || []).join(' ') + ' ' + (g.cat || '')).toLowerCase();
+      if (q && !hay.includes(q)) continue;
+      const b = el('button', '');
+      const u = await imgURL(g.img);
+      b.innerHTML = (u ? `<img src="${u}" alt="">` : '') + `<span>${esc(g.label)}</span>`;
+      b.onclick = () => { onPick(g.img, g.label); scrim.remove(); };
+      grid.appendChild(b);
+    }
+    if (!grid.children.length) grid.appendChild(el('div', 'side-note', q ? 'No matches.' : 'The clinic library is empty — add pictures via 🖼 Clinic library in the sidebar.'));
+  };
+  search.oninput = draw; draw();
 }
 /* the shared library editor — sidebar-level, because it belongs to the whole clinic */
 function openClinicLibrary() {
@@ -2422,6 +2513,34 @@ function openSecurity() {
     rIn.style.opacity = tIn.style.opacity = ''; saveB.classList.remove('hidden'); editB.classList.add('hidden'); };
   editB.onclick = () => confirm2('Edit the clinic connection?', 'Only change this if the clinic lead says so — a wrong value disconnects every Save.', unlockConn, 'Edit');
   if (connected) lockConn(); else { editB.classList.add('hidden'); }
+  const camHold = el('div');
+  const scanB2 = el('button', 'btn btn-sm btn-ghost', '📷 Scan a setup card'); scanB2.style.cssText = 'margin-top:10px;margin-left:8px';
+  scanB2.onclick = async () => {
+    if (rIn.readOnly) { flash('Tap 🔒 Edit connection first — then scan'); return; }
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices) { flash('This browser can\u2019t scan QR codes \u2014 paste the key instead'); return; }
+    try {
+      const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const vid = el('video'); vid.playsInline = true; vid.muted = true; vid.srcObject = stream;
+      vid.style.cssText = 'width:100%;border-radius:12px;margin-top:8px';
+      const stop = () => { try { stream.getTracks().forEach(t2 => t2.stop()); } catch {} vid.remove(); };
+      camHold.appendChild(vid); await vid.play();
+      const loop = async () => {
+        if (!vid.isConnected) { stop(); return; }
+        try {
+          const codes = await det.detect(vid);
+          if (codes.length) {
+            const v2 = String(codes[0].rawValue || '').trim(); stop();
+            const mW2 = v2.match(/^rbtsw1\|([\w.-]+\/[\w.-]+)\|(.+)$/);
+            if (mW2) { rIn.value = mW2[1]; tIn.value = mW2[2]; } else tIn.value = v2;
+            flash('Scanned ✓ — now press Save'); return;
+          }
+        } catch {}
+        setTimeout(loop, 350);
+      };
+      loop();
+    } catch { flash('No camera — paste the key instead'); }
+  };
   const testB = el('button', 'btn btn-sm btn-ghost', 'Test connection'); testB.style.marginTop = '10px'; testB.style.marginLeft = '8px';
   testB.onclick = async () => {
     const v = PubCfg.get(); if (!v) { flash('Save the connection first'); return; }
@@ -2495,7 +2614,7 @@ function openSecurity() {
     };
     vRow.appendChild(vX);
   }
-  m.append(f1, f2, saveB, editB, testB, fPin, pubB, div1, f3, div2, vRow,
+  m.append(f1, f2, saveB, editB, testB, scanB2, camHold, fPin, pubB, div1, f3, div2, vRow,
     el('p', '', '<span style="color:var(--muted);font-weight:700;font-size:12px">One-way by design: tablets read, only this app writes. Images in the local library are not yet encrypted — the vault covers the caseload database.</span>'));
   const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '12px';
   const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
@@ -2523,6 +2642,7 @@ function openSecurity() {
   const gb2 = $('#guideBtn'); if (gb2) gb2.onclick = openGuideCP;
   const lb2 = $('#libBtn'); if (lb2) lb2.onclick = openClinicLibrary;
   if (!LS.getItem('rbts.setupDone')) openSetupWizard(); // sits under the first-run ack; two steps, done
+  if (PubCfg.get() && LS.getItem('rbts.setupDone')) setTimeout(() => cpSync(true), 1200); // every open starts current
   const vb = $('#verBadge'); if (vb) vb.textContent = APP_VERSION_LABEL; // the badge can never drift again
   window.__mirror = { Vault, PubCfg, publishClinic, phiScan };
   try {
