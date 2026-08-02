@@ -270,11 +270,13 @@ textarea.tin{resize:vertical;min-height:96px;font-weight:600;line-height:1.55}
 <script>
 'use strict';
 /* ============================================================
-   RBT TOOLS SETUP · 1.0 — profiles → client folders
+   CLIENT PROFILES — the BCBA side of RBT Tools
+   Profiles publish to the clinic repo; tablets keep themselves current.
    Multiple presets per tool · client.json fidelity · previews
    ============================================================ */
-const APP_VERSION = 15; // experimental build — pairs with RBT Tools 1.10
-const APP_VERSION_LABEL = '1.10x';
+const APP_VERSION = 16; // experimental build — pairs with RBT Tools 1.11
+const APP_VERSION_LABEL = '1.11x';
+const EDITION = 'AF Edition'; // which build this is — the shell build blanks this
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -609,8 +611,8 @@ function render() {
   if (!p) {
     root.appendChild(el('div', 'empty', `
       <div class="mono-big">🦊</div>
-      <h2>Build a client folder</h2>
-      <p>Every client is a color-animal code. Build the profile, press export — the RBT imports it and everything lands ready to run.</p>`));
+      <h2>Build a client profile</h2>
+      <p>Every client is a color-animal code. Build the profile, press Save to clinic — every RBT tablet updates itself.</p>`));
     const b = el('button', 'btn btn-primary btn-lg', 'Start a new client');
     b.style.marginTop = '18px';
     b.onclick = () => newProfile();
@@ -1781,6 +1783,13 @@ function openFeedback() {
   document.body.appendChild(scrim);
 }
 const CHANGELOG = [
+  { v: '1.11x', items: [
+    'Security lives in the clinic repo now: PIN, owner master code, and author colors all travel in config.json — a fresh install provisions itself on first connect',
+    'Owner master code: set/change it in 🔐 Security & sync; it ships hashed and unlocks any tablet',
+    'A new install can no longer accidentally reset the clinic PIN — the published one survives until someone deliberately types a new one',
+    'Publishing skips re-downloading your own save; expired write keys now say so in plain words',
+    'Old zip-workflow wording swept out of every corner',
+  ] },
   { v: '1.10x', items: [
     'Codes start truly untouched — tap an animal to claim it (name + emoji together); taken animals lock; changes need a yes',
     'Authors are presets now: fill role + color once and it saves itself; hold a preset to delete it (clients keep their stamp)',
@@ -1862,7 +1871,7 @@ const BAA_BRIEF = [
   ['What a BAA is — and what would trigger one', [
     'A Business Associate Agreement is the HIPAA contract required when an outside service creates, receives, maintains, or transmits PHI on the clinic\'s behalf.',
     'The current host (GitHub Pages) serves only the app code. It never receives client data — there is nothing to sign a BAA about under current use.',
-    'Trigger point: if client folders ever contain PHI (a real name, a child\'s photo), or if folders sync through a cloud service, that storage service is handling PHI and must be under a BAA.',
+    'Trigger point: if client profiles ever contain PHI (a real name, a child\'s photo), the storage service carrying them is handling PHI and must be under a BAA.',
   ]],
   ['Options and realistic costs', [
     'A — Keep zero-PHI, hand folders over directly (current practice). Cost: $0. Needs: staff adherence to the code system. BAA: none required.',
@@ -2030,7 +2039,7 @@ function firstRunAck() {
   const m = el('div', 'modal', `<h2>Before you build</h2>
     <div style="font-weight:600;line-height:1.6;color:var(--ink)">
     <p><b>No PHI, ever.</b> Clients exist here only as their color-animal code — no names or identifying details in any field, file name, or picture. The code↔child mapping lives in your own records.</p>
-    <p><b>Work lives in this browser, on this computer.</b> Exported .zip files are the durable copies.</p>
+    <p><b>Work lives in this browser, on this computer.</b> Save to clinic publishes the durable copy; .zip export is the offline backup.</p>
     </div>`);
   const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '16px';
   const ok = el('button', 'btn btn-primary btn-lg', 'I understand');
@@ -2251,9 +2260,30 @@ async function shaHex(s) {
   return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 const MASTER_HASH = '0967cb14832c20ddb17b033df5de72cf413bb12df39e001dc15b201432963fb9'; // owner's override — the code itself is written nowhere
+/* SECURITY LIVES IN THE REPO: config.json carries the PIN hash, the owner's master
+   hash, the author roster and the key's age. Any fresh install that connects to the
+   clinic repo provisions itself from it — bring the shell anywhere, jump right in. */
+const ClinicCfg = {
+  get() { try { return JSON.parse(LS.getItem('rbts.clinicCfg') || 'null') || {}; } catch { return {}; } },
+  set(v) { try { LS.setItem('rbts.clinicCfg', JSON.stringify(v || {})); } catch {} },
+  /* every master hash this instance accepts: local, baked-in (AF), or provisioned from the repo */
+  masters() { return [LS.getItem('rbts.masterHash'), MASTER_HASH, this.get().masterHash].filter(h => /^[0-9a-f]{64}$/.test(h || '')); },
+  async adopt(cfg) { // called on every config pull — the repo is the source of truth
+    if (!cfg || cfg.kind !== 'config') return;
+    this.set(cfg);
+    /* colleagues' author colors flow in (never overwriting a name this instance already set) */
+    let ch = false;
+    Object.entries(cfg.authors || {}).forEach(([k, c]) => {
+      if (!Authors.map[k] && /^#[0-9a-fA-F]{6}$/.test(c || '')) { Authors.map[k] = c; ch = true; } });
+    (cfg.authorNames || []).forEach(n => {
+      if (n && !Authors.disp.some(x => x.toLowerCase() === String(n).toLowerCase())) { Authors.disp.push(String(n)); ch = true; } });
+    if (ch) Authors.save();
+  },
+};
 async function ghPut(cfg, path, bytes, msg, retry) {
   const head = { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28' };
   const url = `https://api.github.com/repos/${cfg.repo}/contents/${path}`;
+  const friendly = (s) => s === 401 || s === 403 ? 'the write key was rejected — it expired or was revoked. Make a fresh token (Security & sync).' : 'GitHub said ' + s;
   let sha;
   const cur = await fetch(url, { headers: head });
   if (cur.ok) { try { sha = (await cur.json()).sha; } catch {} }
@@ -2264,10 +2294,31 @@ async function ghPut(cfg, path, bytes, msg, retry) {
     if (cur2.ok) { try { sha2 = (await cur2.json()).sha; } catch {} }
     const put2 = await fetch(url, { method: 'PUT', headers: { ...head, 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg, content: b64enc(bytes), ...(sha2 ? { sha: sha2 } : {}) }) });
-    if (!put2.ok) throw new Error('GitHub said ' + put2.status);
-    return;
+    if (!put2.ok) throw new Error(friendly(put2.status));
+    try { return (await put2.json()).content.sha; } catch { return; }
   }
-  if (!put.ok) throw new Error('GitHub said ' + put.status);
+  if (!put.ok) throw new Error(friendly(put.status));
+  /* hand back the new sha — the caller can mark its own write as already-seen */
+  try { return (await put.json()).content.sha; } catch { return; }
+}
+/* the whole security config, one builder — publish ships exactly this.
+   A fresh install without a local PIN NEVER resets the clinic's: the published
+   hash survives until someone deliberately types a new PIN here. */
+async function buildClinicConfig(cfg) {
+  const cached = ClinicCfg.get();
+  const localPin = LS.getItem('rbts.tabletPin');
+  const pinHash = localPin ? await shaHex('rbt·' + localPin)
+    : (/^[0-9a-f]{64}$/.test(cached.pinHash || '') ? cached.pinHash : await shaHex('rbt·7373'));
+  const conf = { app: 'rbt-tools', kind: 'config', updated: Date.now(), pinHash };
+  /* the owner's master override rides along (hash only) — set here or inherited from the repo */
+  const mh = LS.getItem('rbts.masterHash') || cached.masterHash;
+  if (/^[0-9a-f]{64}$/.test(mh || '')) conf.masterHash = mh;
+  /* author roster: merged, so every Client Profiles install shows the same colors */
+  conf.authors = { ...(cached.authors || {}), ...Authors.map };
+  conf.authorNames = [...new Set([...(cached.authorNames || []), ...Authors.disp])].slice(0, 30);
+  /* the key's age travels too — tablets can warn before the clinic goes quiet */
+  if (cfg && cfg.savedAt) conf.tokenSavedAt = cfg.savedAt;
+  return conf;
 }
 async function publishClinic() {
   const cfg = PubCfg.get();
@@ -2307,14 +2358,16 @@ async function publishClinic() {
       }
       const blob = zipStore(files);
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      await ghPut(cfg, 'clinic.zip', bytes, `clinic update ${todayStr()} by ${(Profiles.active() || { updatedBy: 'BCBA' }).updatedBy || 'BCBA'}`);
+      const newSha = await ghPut(cfg, 'clinic.zip', bytes, `clinic update ${todayStr()} by ${(Profiles.active() || { updatedBy: 'BCBA' }).updatedBy || 'BCBA'}`);
+      /* our own write is already merged here — don't pull it back down on the next sync */
+      if (newSha) try { LS.setItem('rbts.pullSha', newSha); } catch {}
       };
       try { await buildAndPut(); }
       catch (e2) { if (/409/.test(String(e2 && e2.message))) { await cpSync(true); await buildAndPut(); } else throw e2; } /* a colleague saved mid-save: theirs merges in, ours goes out again */
-      /* the tablet PIN travels alongside — hashed, clinic-decided, RBTs have no say */
-      const pin = LS.getItem('rbts.tabletPin') || '7373';
-      const conf = { app: 'rbt-tools', kind: 'config', updated: Date.now(), pinHash: await shaHex('rbt·' + pin) };
+      /* the tablet PIN travels alongside — hashed, clinic-decided, RBTs have no say. */
+      const conf = await buildClinicConfig(cfg);
       await ghPut(cfg, 'config.json', new TextEncoder().encode(JSON.stringify(conf, null, 2)), 'clinic config', true);
+      ClinicCfg.set(conf);
       ready2.forEach(p => { p.updated = todayStr(); p.draft = false; });
       Profiles.save();
       try { LS.setItem('rbts.lastPublish', String(Date.now())); } catch {}
@@ -2331,10 +2384,17 @@ async function pullFromClinic() {
   const cfg = PubCfg.get(); if (!cfg) { flash('Connect first — save the repo and token'); return; }
   const prog = el('div', 'flash', 'Pulling latest from the clinic…'); document.body.appendChild(prog);
   try {
+    /* config first: a brand-new install picks up PIN, master code and authors right here */
+    try {
+      const cr = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/config.json`,
+        { headers: { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28', 'Accept': 'application/vnd.github.raw+json' } });
+      if (cr.ok) await ClinicCfg.adopt(JSON.parse(new TextDecoder().decode(await cr.arrayBuffer())));
+    } catch {}
     const r = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/clinic.zip`,
       { headers: { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28', 'Accept': 'application/vnd.github.raw+json' } });
     if (!r.ok) throw new Error(r.status === 404 ? 'nothing published yet' : 'GitHub said ' + r.status);
     const buf = await r.arrayBuffer();
+    { const h8 = new Uint8Array(buf.slice(0, 2)); if (!(h8[0] === 0x50 && h8[1] === 0x4b)) { flash('Connected \u2713 \u2014 nothing saved by the clinic yet. Build a client, then press \u201CSave to clinic now\u201D.'); return; } }
     await importZip({ arrayBuffer: async () => buf });
   } catch (e) { flash('Pull failed: ' + ((e && e.message) || 'network')); }
   finally { prog.remove(); }
@@ -2348,6 +2408,11 @@ async function cpSync(quiet = true) {
   cpSync.busy = true;
   try {
     const head = { 'Authorization': 'Bearer ' + cfg.token, 'X-GitHub-Api-Version': '2022-11-28' };
+    /* the config rides down with every sync — security provisions itself from the repo */
+    try {
+      const cr = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/config.json`, { headers: { ...head, Accept: 'application/vnd.github.raw+json' } });
+      if (cr.ok) await ClinicCfg.adopt(JSON.parse(new TextDecoder().decode(await cr.arrayBuffer())));
+    } catch {}
     const url = `https://api.github.com/repos/${cfg.repo}/contents/clinic.zip`;
     let sha = null;
     try {
@@ -2365,6 +2430,7 @@ async function cpSync(quiet = true) {
     const raw = await fetch(url, { headers: { ...head, Accept: 'application/vnd.github.raw+json' } });
     if (!raw.ok) return;
     const buf = await raw.arrayBuffer();
+    { const h8 = new Uint8Array(buf.slice(0, 2)); if (!(h8[0] === 0x50 && h8[1] === 0x4b)) { try { LS.setItem('rbts.pullSha', sha || ''); } catch {} return; } } /* setup placeholder — nothing to merge */
     await importZip({ arrayBuffer: async () => buf }, { silent: true });
     try { LS.setItem('rbts.pullSha', sha || ''); } catch {}
   } catch (e) { if (!quiet) flash('Sync check failed: ' + ((e && e.message) || 'network')); }
@@ -2592,6 +2658,36 @@ function openSecurity() {
   prB.onclick = () => { if (!outBox.value) { flash('Paste the read-only token first'); return; } printOfficeCard(outBox.value); };
   const btnRow = el('div', 'row'); btnRow.style.marginTop = '8px'; btnRow.append(cpB, prB);
   f3.append(roIn, outBox, qrHold, btnRow, leadB);
+  /* the OWNER'S MASTER CODE — set once, ships hashed in config.json, unlocks any tablet
+     and guards vault destruction. The shell edition has no baked-in code: this IS the setup. */
+  const divM = el('div'); divM.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
+  const fM = el('div', 'field');
+  fM.appendChild(el('span', 'label', 'Owner master code (override for any tablet · guards vault destruction)'));
+  const mState = el('span', 'sub', LS.getItem('rbts.masterHash')
+    ? 'A master code is set on this install — it ships (hashed) with every Save to clinic.'
+    : MASTER_HASH ? 'This edition carries a built-in owner code. You can set your own on top of it.'
+    : ClinicCfg.get().masterHash ? 'A master code is provisioned from the clinic repo.'
+    : '⚠ No master code yet — set one so YOU can always get into any tablet.');
+  const mBtn = el('button', 'btn btn-sm btn-ghost', LS.getItem('rbts.masterHash') ? 'Change master code…' : 'Set master code…');
+  mBtn.style.marginTop = '8px';
+  mBtn.onclick = async () => {
+    if (ClinicCfg.masters().length) { // changing an existing code proves you hold one first
+      const cur = prompt('Enter the CURRENT master code first:');
+      if (cur == null) return;
+      const h0 = await shaHex('rbt·' + cur.trim());
+      if (!ClinicCfg.masters().includes(h0)) { flash('Not a current master code'); return; }
+    }
+    const a = prompt('New master code (numbers or words, 4+ characters — written down NOWHERE but your head):');
+    if (a == null) return;
+    if (a.trim().length < 4) { flash('At least 4 characters'); return; }
+    const b = prompt('Type it once more:');
+    if (b == null) return;
+    if (a.trim() !== b.trim()) { flash('They didn’t match — nothing changed'); return; }
+    try { LS.setItem('rbts.masterHash', await shaHex('rbt·' + a.trim())); } catch {}
+    flash('Master code set ✓ — ships with the next Save to clinic');
+    scrim.remove(); openSecurity();
+  };
+  fM.append(mState, mBtn);
   const div2 = el('div'); div2.style.cssText = 'border-top:1px solid var(--line);margin:16px 0 12px';
   const vRow = el('div', 'row');
   const vB = el('button', 'btn btn-sm ' + (Vault.enabled() ? 'btn-ghost' : 'btn-primary'), Vault.enabled() ? '🔒 Vault is ON — change passphrase' : '🔒 Encrypt caseload (set passphrase)');
@@ -2608,13 +2704,13 @@ function openSecurity() {
       const code = prompt('Destroying the vault stores the caseload UNENCRYPTED again.\nEnter the master code to continue:');
       if (code == null) return;
       shaHex('rbt·' + code.trim()).then(h => {
-        if (h === MASTER_HASH) { Vault.remove(); scrim.remove(); }
+        if (ClinicCfg.masters().includes(h)) { Vault.remove(); scrim.remove(); }
         else flash('Not the master code — the vault stays');
       });
     };
     vRow.appendChild(vX);
   }
-  m.append(f1, f2, saveB, editB, testB, scanB2, camHold, fPin, pubB, div1, f3, div2, vRow,
+  m.append(f1, f2, saveB, editB, testB, scanB2, camHold, fPin, pubB, div1, f3, divM, fM, div2, vRow,
     el('p', '', '<span style="color:var(--muted);font-weight:700;font-size:12px">One-way by design: tablets read, only this app writes. Images in the local library are not yet encrypted — the vault covers the caseload database.</span>'));
   const r = el('div', 'row'); r.style.justifyContent = 'flex-end'; r.style.marginTop = '12px';
   const ok = el('button', 'btn btn-primary', 'Done'); ok.onclick = () => scrim.remove();
@@ -2644,7 +2740,7 @@ function openSecurity() {
   if (!LS.getItem('rbts.setupDone')) openSetupWizard(); // sits under the first-run ack; two steps, done
   if (PubCfg.get() && LS.getItem('rbts.setupDone')) setTimeout(() => cpSync(true), 1200); // every open starts current
   const vb = $('#verBadge'); if (vb) vb.textContent = APP_VERSION_LABEL; // the badge can never drift again
-  window.__mirror = { Vault, PubCfg, publishClinic, phiScan };
+  window.__mirror = { Vault, PubCfg, publishClinic, phiScan, ClinicCfg, buildClinicConfig, Authors, LS, APP_VERSION, APP_VERSION_LABEL, EDITION };
   try {
     const seen = LS.getItem('rbts.seenVer');
     if (seen && seen !== APP_VERSION_LABEL) setTimeout(() => flash(`Updated to ${APP_VERSION_LABEL} — tap “What's new” below`), 800);
