@@ -104,7 +104,11 @@ svg.ic{width:1.3em;height:1.3em;fill:none;stroke:currentColor;stroke-width:2.1;
 .tab-t.on .tdot{background:#fff}
 .tab-t .tdot.live{animation:blink 1.6s ease-in-out infinite}
 body.reduce-motion .tab-t .tdot.live{animation:none}
-#topbar.tb-c2 .tab-t{padding:9px 10px;font-size:13px}
+#topbar.tb-c2 .tab-t{padding:9px 10px}
+/* full tool names always — the text shrinks before a single letter is dropped */
+#topbar.tb-f1 .tab-t{font-size:13px;padding:9px 11px}
+#topbar.tb-f2 .tab-t{font-size:11.5px;padding:8px 9px;gap:5px}
+.tab-t .tlabel{white-space:nowrap}
 #topbar.tb-c2 .tb-btn{min-width:42px;min-height:44px}
 #topbar.tb-c2 .run-chip{padding:7px 10px}
 
@@ -473,7 +477,9 @@ body.reduce-motion .token.pop{animation:none}
 .choice-card .vslot{flex:1;aspect-ratio:auto;min-height:0}
 .choice-card .vlabel{font-size:clamp(17px,2.6vh,28px)}
 .choice-card:active{transform:scale(.97)}
-.choice-card.chosen{box-shadow:0 0 0 5px var(--green),var(--shadow-lg);transform:scale(1.02)}
+.choice-card.chosen{box-shadow:0 0 0 5px var(--green),var(--shadow-lg);transform:scale(1.02);animation:chosenIn .3s cubic-bezier(.2,.9,.3,1.25)}
+@keyframes chosenIn{0%{transform:scale(.94)}60%{transform:scale(1.06)}100%{transform:scale(1.02)}}
+body.reduce-motion .choice-card.chosen{animation:none}
 .choice-card.dim{opacity:.38}
 .choice-card.dim:hover{opacity:.6}
 /* many choices: cards release their width cap and tighten up */
@@ -1255,10 +1261,17 @@ body.reduce-motion .magnify{transition:none !important}
 @keyframes sbNudge{0%,100%{transform:none}30%{transform:translateX(-6px) rotate(-.8deg)}65%{transform:translateX(6px) rotate(.8deg)}}
 .sb-card.nudge{animation:sbNudge .32s ease}
 body.reduce-motion .sb-card.nudge{animation:none}
+/* big squares, no words — the picture IS the card */
+.sb-big .sb-card{flex-direction:column;gap:0;padding:10px}
+.sb-big .sb-card .thumb.bigv{width:clamp(96px,17vh,190px);height:clamp(96px,17vh,190px);border-radius:16px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--surface-2)}
+.sb-big .sb-card .thumb.bigv img{width:100%;height:100%;object-fit:contain}
+.sb-big .sb-card .thumb.bigv .emoji{font-size:clamp(64px,11vh,120px);line-height:1}
+.sb-big .sb-card .thumb.bigv .vtext{font-family:var(--display);font-weight:700;font-size:clamp(20px,3.6vh,38px);
+  text-align:center;padding:6px;overflow-wrap:anywhere}
+.sb-big .sb-card .sb-mark{position:absolute;top:8px;right:8px}
+.sb-big .sb-slot{min-height:clamp(116px,19vh,210px)}
 /* the card in flight while dragging */
-.sb-ghost{position:fixed;z-index:80;pointer-events:none;margin:0;box-shadow:var(--shadow-lg);
-  transform:rotate(2deg) scale(1.04);opacity:.96}
-.sb-card.lifting{opacity:.35}
 @media (max-aspect-ratio:4/5){
   .sb-row{gap:var(--s3)}
   .sb-card .grow{font-size:clamp(14px,2.2vh,22px)}
@@ -1387,7 +1400,7 @@ const DISCLAIMER = {
   full: [
     'This app puts shared visual supports — timers, schedules, token boards and more — on one screen for ABA sessions.',
     'It is a support, not a program. It never replaces a client’s individualized programming, BCBA or intern direction, supervision, or required data collection (e.g., in CentralReach). When anything here conflicts with a client’s plan, the plan wins.',
-    'Keep client privacy protected: clients appear only as their color-animal code. Never store names, photos of clients, or any other identifying information in this app or in client folders.',
+    'Keep client privacy protected: clients appear only as their color-animal code. Never store names, photos of clients, or any other identifying information in this app or in client profiles.',
   ],
 };
 
@@ -1409,8 +1422,9 @@ const LS = (() => {
 })();
 
 /* ---------- settings ---------- */
-const APP_VERSION = 15; // pairs with Client Profiles 1.10x
-const APP_VERSION_LABEL = '1.10';
+const APP_VERSION = 16; // pairs with Client Profiles 1.11x
+const APP_VERSION_LABEL = '1.11';
+const EDITION = 'AF Edition'; // which build this is — the shell build blanks this
 const DEFAULTS = {
   theme: 'standard', fun: true, sound: true, volume: 0.7, reduceMotion: false,
   endingSound: 'marimba', // marimba · bells · musicbox · off — always the extended, gentle ringer
@@ -1420,6 +1434,8 @@ const DEFAULTS = {
   tips: true, // the ? button on the top bar
   btnDuo: true, btnGallery: true, // top-bar buttons that can be tucked away
   schedAnyOrder: false, // unlocked screens may check any open schedule step
+  schedBoardBig: false, // To Do → Done board: large square visuals, no words
+  tabRecents: true, // recently-used tools line up as tabs beside the pinned ones
   smartNav: false, // Done jumps to a still-running tool; off = Done returns to this tool's setup
   _v: APP_VERSION,
 };
@@ -1962,6 +1978,12 @@ const Lock = {
     z.addEventListener('pointerleave', cancel); z.addEventListener('pointercancel', cancel);
   },
 };
+/* one date-and-time format for every "when": Aug 2 · 3:41 PM */
+function fmtDT(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · '
+    + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
 let _lastFlash = { m: '', at: 0 };
 function flash(msg) {
   const n2 = Date.now(); // the same message twice in a second is noise, not news
@@ -1992,6 +2014,8 @@ function clickThrough(overlayEl, x, y) {
    If the hold action declines (returns false), the tap passes through —
    a child's slow press still lands as a normal tap. */
 function holdBind(elm, { ms = 650, slop = 26, onHold, ignore, ta = 'none', ring = true, glyph = '', danger = false } = {}) {
+  /* glyph and danger may be FUNCTIONS — the ring then shows what the hold will do
+     RIGHT NOW (locked: ✓ complete · unlocked: ⋯ menu), decided at press time */
   if (ta) elm.style.touchAction = ta;
   let t = 0, sx = 0, sy = 0, did = false, pid = null, ringEl = null;
   const stop = () => {
@@ -2008,9 +2032,11 @@ function holdBind(elm, { ms = 650, slop = 26, onHold, ignore, ta = 'none', ring 
     elm.classList.add('holding');
     if (ring) {
       /* the ring can carry a tiny glyph — the hold SHOWS what it will do (📌 pin, ⋯ menu, ✕ mark) */
-      ringEl = el('span', 'hold-ring' + (danger ? ' hr-danger' : ''));
+      const gl = typeof glyph === 'function' ? glyph() : glyph;
+      const dg = typeof danger === 'function' ? danger() : danger;
+      ringEl = el('span', 'hold-ring' + (dg ? ' hr-danger' : ''));
       ringEl.innerHTML = '<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" pathLength="100"/></svg>'
-        + (glyph ? `<span class="hr-g">${esc(glyph)}</span>` : '');
+        + (gl ? `<span class="hr-g">${esc(gl)}</span>` : '');
       ringEl.style.setProperty('--hms', ms + 'ms');
       elm.appendChild(ringEl);
     }
@@ -2375,9 +2401,10 @@ const TabBar = {
     }
     this.save(); this.render();
   },
-  shown() { // pins first, then live tools, then recents
+  shown() { // pins first, then live tools, then recents (if the setting allows them)
     const live = Object.keys(MS).filter(k => MS[k] && MS[k].phase === 'run');
-    return [...new Set([...this.pins, ...live, ...this.list])].filter(k => TITLE[k] && Profile.allows(k)).slice(0, 5);
+    const rec = Store.get('tabRecents') ? this.list : [];
+    return [...new Set([...this.pins, ...live, ...rec])].filter(k => TITLE[k] && Profile.allows(k)).slice(0, 5);
   },
   push(key) {
     if (!TITLE[key]) return;
@@ -2418,10 +2445,11 @@ function renderTabDots() {
     dot.style.background = wants === 'done' ? 'var(--green)' : '';
   });
 }
-/* the bar must NEVER clip: shed labels → shorten → tighten → drop oldest tabs */
+/* the bar must NEVER clip — and a tab never truncates its name:
+   the TEXT shrinks to fit (full words always), then the bar tightens, then oldest tabs drop */
 function fitTopbar() {
   const bar = $('#topbar'); if (!bar) return;
-  bar.classList.remove('tb-c1', 'tb-c2');
+  bar.classList.remove('tb-c1', 'tb-c2', 'tb-f1', 'tb-f2');
   const tabs = $$('#tabRow .tab-t');
   tabs.forEach(t => { t.classList.remove('tab-hide'); const s = $('.tlabel', t); if (s) s.textContent = TITLE[t.dataset.key]; });
   requestAnimationFrame(() => {
@@ -2429,7 +2457,9 @@ function fitTopbar() {
     if (fits()) return;
     bar.classList.add('tb-c1');
     if (fits()) return;
-    tabs.forEach(t => { const s = $('.tlabel', t); if (s) s.textContent = SHORT[t.dataset.key]; });
+    bar.classList.add('tb-f1'); // smaller text, full words
+    if (fits()) return;
+    bar.classList.add('tb-f2'); // smallest comfortable text, still full words
     if (fits()) return;
     bar.classList.add('tb-c2');
     /* drop oldest first — never the active tool's tab, and pinned tabs only as a last resort */
@@ -2698,7 +2728,7 @@ function presetStrip(mode) {
     if (!(cRec && pr.name === cRec.name)) chip.appendChild(document.createTextNode(pr.name));
     if (pr.client) {
       /* prescribed by the BCBA — not deletable here; it leaves only with the client */
-      chip.title = 'From the client folder — removing the client (Settings → Clients) removes it';
+      chip.title = 'From the clinic profile — removing the client (Settings → Clients) removes it';
     } else {
       const x = el('span', 'px', '×');
       x.onclick = (e) => { e.stopPropagation();
@@ -3510,7 +3540,7 @@ function tokenSetup(scr, st) {
     const custom = el('button', 'chip' + (mixed || !TOKEN_THEMES.includes(cfg.theme) ? ' on' : ''),
       mixed ? '🎨 ' + cfg.theme.slice(0, 4).join('') : (!TOKEN_THEMES.includes(cfg.theme) ? cfg.theme : '✏️'));
     custom.style.fontSize = mixed ? '18px' : '24px';
-    if (mixed) custom.title = 'A mixed set from the client folder — pick a single symbol to replace it';
+    if (mixed) custom.title = 'A mixed set from the clinic profile — pick a single symbol to replace it';
     custom.onclick = () => openPicker(v => { if (v && v.type === 'emoji') { cfg.theme = v.emoji; paintThemes(); } }, { emojiOnly: true });
     themeRow.appendChild(custom);
   };
@@ -3639,6 +3669,10 @@ function choiceSetup(scr, st) {
   const lo = Math.max(2, cLim.min != null ? cLim.min : 2), hi = Math.min(16, cLim.max != null ? cLim.max : 16);
   while (cfg.options.length < lo) cfg.options.push(null);
   while (cfg.options.length > hi) cfg.options.pop();
+  /* the grid never has holes: filled choices pack left, empties trail at the end —
+     so shrinking the count only ever eats blanks (until only filled ones remain) */
+  const compact = () => { const full = cfg.options.filter(Boolean); while (full.length < cfg.options.length) full.push(null); cfg.options = full; };
+  compact();
   /* the − / + stepper never moves; the slots stay a tidy uniform grid */
   const countRow = el('div', 'count-row');
   const minus = el('button', 'icon-btn', '<svg viewBox="0 0 24 24" class="ic"><path d="M5 12h14"/></svg>');
@@ -3657,7 +3691,18 @@ function choiceSetup(scr, st) {
     cfg.options.forEach((o, i) => {
       const s = el('button', 'vslot');
       renderVisual(s, o, true);
-      s.onclick = () => openPicker(v => { cfg.options[i] = v; draw(); }, { allowClear: !!o });
+      s.onclick = () => {
+        if (o) {
+          /* replace in place; clearing pulls the rest left — the blank lands at the END */
+          openPicker(v => { if (v == null) { cfg.options.splice(i, 1); cfg.options.push(null); } else cfg.options[i] = v; draw(); }, { allowClear: true });
+        } else {
+          /* filling: the picker STAYS — each pick lands on the next empty spot,
+             and it excuses itself the moment the board is full */
+          openPicker(v => { const at = cfg.options.indexOf(null); if (at >= 0 && v) cfg.options[at] = v; draw(); },
+            { keepOpen: true, title: 'Fill the choices', closeWhen: () => !cfg.options.includes(null),
+              inPlan: () => cfg.options.filter(Boolean), countNoun: 'on the board' });
+        }
+      };
       grid.appendChild(s);
     });
   };
@@ -4158,13 +4203,20 @@ function schedSetup(scr, st) {
   const ts = el('div', 'tool-set');
   const it1 = el('div', 'ts-item'); it1.appendChild(el('span', 'label', 'Style'));
   const hint = el('div', 'set-hint');
-  const setHint = () => { hint.textContent = cfg.mode === 'focus'
+  const setHint = () => { it3.style.display = cfg.mode === 'board' ? '' : 'none'; hint.textContent = cfg.mode === 'focus'
     ? 'Focus: the current step and the next step, big and clear — for early learners.'
     : cfg.mode === 'board'
-    ? 'Board: To Do → Done, like a laminated velcro board — tap a card or drag it across.'
+    ? 'Board: To Do → Done, like a laminated velcro board — tap a card and it slides into its own Done spot.'
     : 'List: the whole plan stays front and center — for readers. Hold a circle to mark a step incorrect.'; };
   it1.appendChild(segRow([['focus', 'Focus'], ['list', 'List'], ['board', 'To Do → Done']], cfg.mode, v => { cfg.mode = v; setHint(); }));
   ts.append(it1);
+  /* board-only: big square pictures, no words — for non-readers */
+  const it3 = el('div', 'ts-item'); it3.appendChild(el('span', 'label', 'Big squares, no words'));
+  const bb = el('button', 'chip' + (Store.get('schedBoardBig') ? ' on' : ''), Store.get('schedBoardBig') ? 'On' : 'Off');
+  bb.onclick = () => { Store.set('schedBoardBig', !Store.get('schedBoardBig')); bb.classList.toggle('on'); bb.textContent = Store.get('schedBoardBig') ? 'On' : 'Off'; };
+  bb.title = 'The board shows large square visuals only — no text on the cards';
+  it3.appendChild(bb);
+  ts.append(it3);
   /* tool-specific setting lives WITH its tool, not buried in Settings */
   const it2 = el('div', 'ts-item'); it2.appendChild(el('span', 'label', 'Check any order'));
   const ao = el('button', 'chip' + (Store.get('schedAnyOrder') ? ' on' : ''), Store.get('schedAnyOrder') ? 'On' : 'Off');
@@ -4465,9 +4517,14 @@ function schedRunFocus(scr, st) {
       }
       hero.appendChild(nc);
     }
-    /* ONE quiet action on the whole screen: the check, centered under the step */
+    /* ONE quiet action on the whole screen: the check, centered under the step.
+       Locked, a tap bounces off it — a still hold completes (the adult gesture). */
     const check = el('button', 'sf-check kid-safe', '<svg viewBox="0 0 24 24" class="ic"><path d="M4 13l5 5L20 7"/></svg>');
-    check.onclick = () => { if (run.done[run.pos] === false) schedMark(st, 'ok'); };
+    holdBind(check, { glyph: () => '✓', onHold: () => {
+      if (!Lock.on) return false; // unlocked: the release lands as the normal tap
+      if (run.done[run.pos] === false) schedMark(st, 'ok');
+    } });
+    check.onclick = () => { if (check._held && check._held()) return; if (Lock.on) return; if (run.done[run.pos] === false) schedMark(st, 'ok'); };
     checkline.appendChild(check);
     stepEls[run.pos] && stepEls[run.pos].scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' });
   }
@@ -4475,13 +4532,14 @@ function schedRunFocus(scr, st) {
   paint();
 }
 /* BOARD — one laminated sheet, row-paired To Do → Done (Tanner's sketch).
-   Every visual has its OWN Done spot directly beside it: tap the card or drag
-   it straight across — it can land nowhere else. Same rules as List:
-   locked + in-order → only the current card moves; any-order frees the rest. */
+   Every visual has its OWN Done spot directly beside it: tap the card and it
+   slides straight across — it can land nowhere else. Same rules as List:
+   locked + in-order → only the current card moves; any-order frees the rest.
+   Child lock: a tap can't finish a step — a still HOLD on the card does. */
 function schedRunBoard(scr, st) {
   const cfg = st.cfg, run = st.run;
   const wrap = el('div', 'sb-wrap'); scr.appendChild(wrap);
-  const sheet = el('div', 'sb-sheet'); wrap.appendChild(sheet);
+  const sheet = el('div', 'sb-sheet' + (Store.get('schedBoardBig') ? ' sb-big' : '')); wrap.appendChild(sheet);
   const headRow = el('div', 'sb-head-row');
   const headMid = el('div'); // the embedded timer rides between the column names
   headRow.append(el('div', 'sb-head', 'To Do'), headMid, el('div', 'sb-head dn', 'Done'));
@@ -4500,68 +4558,34 @@ function schedRunBoard(scr, st) {
   const nudge = (card) => { card.classList.remove('nudge'); void card.offsetWidth; card.classList.add('nudge'); };
   function mkCard(i, side) {
     const it = cfg.items[i];
+    const big = Store.get('schedBoardBig');
     const card = el('button', 'sb-card kid-safe'
       + (side === 'done' ? ' done-side' : '')
       + (run.done[i] === 'err' ? ' err' : '')
       + (side === 'todo' && i === run.pos && !run.redo && st.phase !== 'done' ? ' now' : ''));
-    const th = el('div', 'thumb'); renderThumb(th, it.v); card.appendChild(th);
-    const nm = el('div', 'grow'); nm.textContent = visualLabel(it.v) || 'Step ' + (i + 1); card.appendChild(nm);
+    const th = el('div', 'thumb');
+    if (big) { th.classList.add('bigv'); renderVisual(th, it.v); } // words render AS the visual, not under it
+    else renderThumb(th, it.v);
+    card.appendChild(th);
+    if (!big) { const nm = el('div', 'grow'); nm.textContent = visualLabel(it.v) || 'Step ' + (i + 1); card.appendChild(nm); }
     if (side === 'done') card.appendChild(el('span', 'sb-mark' + (run.done[i] === 'err' ? ' err' : ''), run.done[i] === 'err' ? '✕' : '✓'));
-    /* a still hold opens the RBT step menu (edit / do-now / mark not done) */
-    holdBind(card, { ta: 'pan-y', glyph: '⋯', onHold: () => { if (Lock.on) return false; schedStepMenu(st, i); } });
+    /* one hold, two meanings — unlocked: the RBT step menu · locked: complete the step.
+       The ring's glyph shows which one this press will do. */
+    holdBind(card, { ta: 'pan-y', glyph: () => Lock.on ? '✓' : '⋯', onHold: () => {
+      if (Lock.on) {
+        if (side !== 'todo' || !movable(i)) return false;
+        complete(i, card.getBoundingClientRect());
+        return;
+      }
+      schedStepMenu(st, i);
+    } });
     if (side === 'todo') {
-      card.onclick = () => { if (card._held && card._held()) return; if (card._dragged) { card._dragged = false; return; }
+      card.onclick = () => { if (card._held && card._held()) return;
         if (!movable(i)) return nudge(card);
+        if (Lock.on) return nudge(card); // locked: taps bounce — holding the card completes it
         complete(i, card.getBoundingClientRect()); };
-      wireBoardDrag(card, i);
     }
     return card;
-  }
-  /* drag: strictly HORIZONTAL — the ghost's row is locked, only x moves.
-     Release past the middle line lands it in its own Done spot; else it springs back. */
-  function wireBoardDrag(card, i) {
-    card.addEventListener('pointerdown', (e) => {
-      const sx = e.clientX, sy = e.clientY;
-      let ghost = null;
-      const r0 = card.getBoundingClientRect();
-      const maxX = () => { const rr = rowsEl.getBoundingClientRect(); return rr.right - r0.width - 6; };
-      const move = (ev) => {
-        const dx = ev.clientX - sx, dy = ev.clientY - sy;
-        if (!ghost) {
-          if (dx < 18 || dx < Math.abs(dy) * 1.2) return; // rightward pull only; vertical stays scroll
-          card._dragged = true;
-          ghost = card.cloneNode(true);
-          ghost.classList.add('sb-ghost'); ghost.classList.remove('lifting');
-          ghost.style.width = r0.width + 'px'; ghost.style.height = r0.height + 'px';
-          ghost.style.top = r0.top + 'px'; // the row is LOCKED — this is a horizontal move
-          document.body.appendChild(ghost);
-          card.classList.add('lifting');
-          try { card.setPointerCapture(ev.pointerId); } catch {}
-        }
-        ghost.style.left = clamp(r0.left + Math.max(0, dx), r0.left, maxX()) + 'px';
-      };
-      const up = (ev) => {
-        card.removeEventListener('pointermove', move);
-        card.removeEventListener('pointerup', up);
-        card.removeEventListener('pointercancel', up);
-        if (!ghost) return;
-        const g = ghost; ghost = null;
-        card.classList.remove('lifting');
-        const midX = rowsEl.getBoundingClientRect().left + rowsEl.getBoundingClientRect().width / 2;
-        const dropped = ev.type === 'pointerup' && g.getBoundingClientRect().left + g.getBoundingClientRect().width * 0.35 > midX && movable(i);
-        if (dropped) { const gr = g.getBoundingClientRect(); g.remove(); complete(i, gr); }
-        else { /* spring straight back along the row */
-          if (!movable(i)) nudge(card);
-          g.style.transition = 'left .28s cubic-bezier(.2,.9,.25,1), opacity .28s';
-          g.style.left = r0.left + 'px'; g.style.opacity = '0.4';
-          setTimeout(() => g.remove(), 300);
-        }
-        setTimeout(() => { card._dragged = false; }, 80); // swallow the synthesized click
-      };
-      card.addEventListener('pointermove', move);
-      card.addEventListener('pointerup', up);
-      card.addEventListener('pointercancel', up);
-    });
   }
   function paint() {
     const doneAll = st.phase === 'done';
@@ -4617,12 +4641,14 @@ function schedRunList(scr, st) {
        "check any order" is on and the screen is unlocked (the child never skips ahead) */
     const checkable = () => run.done[i] === false && st.phase !== 'done'
       && (i === run.pos || (Store.get('schedAnyOrder') && !Lock.on));
-    /* tap = done · a still hold = missed (X) — RBT only, never while locked */
-    holdBind(check, { glyph: '✕', danger: true, onHold: () => {
-      if (Lock.on || !checkable()) return false;
+    /* unlocked: tap = done · a still hold = missed (X).
+       locked: taps do NOTHING — a still hold completes. The adult gesture survives the lock. */
+    holdBind(check, { glyph: () => Lock.on ? '✓' : '✕', danger: () => !Lock.on, onHold: () => {
+      if (!checkable()) return false;
+      if (Lock.on) { schedMarkAt(st, i, 'ok'); return; }
       schedMarkAt(st, i, 'err');
     } });
-    check.onclick = () => { if (!check._held() && checkable()) schedMarkAt(st, i, 'ok'); };
+    check.onclick = () => { if (!check._held() && checkable() && !Lock.on) schedMarkAt(st, i, 'ok'); };
     row.append(grow, tag, check);
     list.appendChild(schedHold(row, st, i));
     /* "Do this now" is a HOLD action (or the Adjust panel) — never a stray tap */
@@ -5358,7 +5384,7 @@ function openPicker(onPick, opts = {}) {
   if (restrict && tab === 'emoji') tab = 'images';
   const scrim = el('div', 'modal-scrim');
   const modal = el('div', 'modal'); scrim.appendChild(modal);
-  modal.innerHTML = `<div class="modal-head"><h2>${opts.keepOpen ? 'Add steps' : 'Choose'}</h2><button class="x-btn"><svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="modal-body"></div>`;
+  modal.innerHTML = `<div class="modal-head"><h2>${esc(opts.title || (opts.keepOpen ? 'Add steps' : 'Choose'))}</h2><button class="x-btn"><svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="modal-body"></div>`;
   const body = $('.modal-body', modal);
   const close = () => scrim.remove();
   /* while building a plan: a live count in the head, and ✓ badges on anything already in it */
@@ -5378,7 +5404,7 @@ function openPicker(onPick, opts = {}) {
   };
   const track = (cell, v) => { if (opts.inPlan) { cellReg.push({ cell, v }); paintBadge(cell, v); } return cell; };
   const refreshPlanMarks = () => {
-    if (headCount) headCount.textContent = opts.inPlan().length + ' in plan';
+    if (headCount) headCount.textContent = opts.inPlan().length + ' ' + (opts.countNoun || 'in plan');
     cellReg.forEach(({ cell, v }) => { if (cell.isConnected) paintBadge(cell, v); });
   };
   /* keepOpen: build whole plans in one visit — each pick lands BY NAME, the picker stays */
@@ -5388,6 +5414,7 @@ function openPicker(onPick, opts = {}) {
       const nm = v.type === 'emoji' ? v.emoji : visualLabel(v);
       flash(nm ? `Added “${nm}” ✓` : 'Added ✓');
       refreshPlanMarks();
+      if (opts.closeWhen && opts.closeWhen()) close(); // the job's done — the picker leaves on its own
       return;
     }
     close();
@@ -5494,7 +5521,7 @@ function openPicker(onPick, opts = {}) {
       addRow.style.marginBottom = '14px';
       body.appendChild(addRow);
     } else {
-      body.appendChild(el('div', 'hint', `Pictures for ${esc(pRec.name)} come from the client folder only.`));
+      body.appendChild(el('div', 'hint', `Pictures for ${esc(pRec.name)} are limited to their own set — chosen by your BCBA.`));
     }
     const grid = el('div', 'pick-grid');
     body.appendChild(grid);
@@ -5636,7 +5663,7 @@ function openGallery() {
 }
 function openAbout() {
   const scrim = el('div', 'modal-scrim'); const modal = el('div', 'modal'); modal.style.maxWidth = '620px';
-  modal.innerHTML = `<div class="modal-head"><h2>About this app</h2><button class="x-btn"><svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="modal-body"><div class="about-text">${DISCLAIMER.full.map(p => `<p>${esc(p)}</p>`).join('')}<p style="color:var(--muted);font-size:13px">RBT Tools <span class="vbadge">${APP_VERSION_LABEL}</span> — pairs with Client Profiles ${APP_VERSION_LABEL}</p></div></div>`;
+  modal.innerHTML = `<div class="modal-head"><h2>About this app</h2><button class="x-btn"><svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="modal-body"><div class="about-text">${DISCLAIMER.full.map(p => `<p>${esc(p)}</p>`).join('')}<p style="color:var(--muted);font-size:13px">RBT Tools <span class="vbadge">${APP_VERSION_LABEL}</span>${EDITION ? ' · ' + esc(EDITION) : ''} — pairs with Client Profiles ${APP_VERSION_LABEL}</p></div></div>`;
   scrim.appendChild(modal); modalRoot().appendChild(scrim);
   $('.x-btn', modal).onclick = () => scrim.remove(); scrim.onclick = e => { if (e.target === scrim) scrim.remove(); };
 }
@@ -5735,8 +5762,8 @@ function openProfileMenu() {
     r2.onclick = () => pick(c.slug);
     body.appendChild(r2);
   });
-  if (!Clients.list.length) body.appendChild(el('div', 'hint', 'No client folders imported yet — Settings → Clients → Import .zip. Profiles are removed only from Settings, on purpose.'));
-  else body.appendChild(el('div', 'hint', 'Profiles come from imported client folders. Removing one is deliberate: Settings → Clients.'));
+  if (!Clients.list.length) body.appendChild(el('div', 'hint', 'No clients on this tablet yet — join Clinic sync in Settings and the caseload arrives on its own.'));
+  else body.appendChild(el('div', 'hint', 'Profiles arrive through Clinic sync and keep themselves current. Removing one is deliberate: Settings → Clients.'));
 }
 function firstRunAck() {
   if (LS.getItem('rbt.ack')) return;
@@ -5807,6 +5834,7 @@ function openSettings() {
   const g2 = group('Look & feel'); // tool-specific switches live on their tools now (Celebration → Tokens, any-order → Schedule)
   rowSeg(g2, 'Theme', 'theme', [['standard', 'Standard'], ['contrast', 'High contrast']]);
   rowToggle(g2, 'Reduce motion', 'reduceMotion');
+  rowToggle(g2, 'Recent tool tabs', 'tabRecents', 'Tools you visited line up as tabs beside your pinned ones', () => TabBar.render());
   rowToggle(g2, 'Tips button', 'tips', 'The ? on the top bar with per-tool pointers', () => syncTipBtn());
   rowToggle(g2, 'Duo button', 'btnDuo', 'Two-tools-at-once on the top bar', () => syncTaskbarBtns());
   rowToggle(g2, 'Gallery button', 'btnGallery', 'The picture library on the top bar (pictures stay reachable from every tool)', () => syncTaskbarBtns());
@@ -5824,11 +5852,11 @@ function openSettings() {
   g5.appendChild(clientList);
   function drawClients() {
     clientList.innerHTML = '';
-    if (!Clients.list.length) { clientList.appendChild(el('div', 'hint', 'No client folders imported yet.')); return; }
+    if (!Clients.list.length) { clientList.appendChild(el('div', 'hint', 'No clients yet — they arrive through Clinic sync.')); return; }
     Clients.list.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach(c => {
       const r = el('div', 'set-row');
       const d = new Date(c.date);
-      r.innerHTML = `<div class="txt"><b>${esc(c.emoji)} ${esc(c.name)}</b><p>${c.tools.map(k => TITLE[k] || k).join(', ') || 'no tools'} · ${c.visuals} picture${c.visuals === 1 ? '' : 's'} · imported ${d.toLocaleDateString()}</p></div>`;
+      r.innerHTML = `<div class="txt"><b>${esc(c.emoji)} ${esc(c.name)}</b><p>${c.tools.map(k => TITLE[k] || k).join(', ') || 'no tools'} · ${c.visuals} picture${c.visuals === 1 ? '' : 's'} · last synced ${d.toLocaleDateString()}</p></div>`;
       const rm = el('button', 'btn btn-ghost btn-sm', 'Remove');
       rm.onclick = () => typedConfirm(c, async () => { await removeClientEverywhere(c.slug); drawClients(); });
       r.appendChild(rm); clientList.appendChild(r);
@@ -5852,13 +5880,13 @@ function openSettings() {
   const syncOn = !!SyncCfg.get();
   const lastAt = +LS.getItem('rbt.syncAt') || 0;
   scRow.innerHTML = `<div class="txt"><b>Clinic sync</b><p>${syncOn
-    ? `Connected to the clinic repo${lastAt ? ' · last sync ' + new Date(lastAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}. Read-only: this tablet can never change the clinic's files.`
+    ? `Connected to the clinic repo${lastAt ? ' · last sync ' + fmtDT(lastAt) : ''}. Read-only: this tablet can never change the clinic's files.`
     : 'Paste the setup code from the office card — profiles then keep themselves current.'}</p></div>`;
   if (syncOn) {
     const now2 = el('button', 'btn btn-primary btn-sm', 'Sync now');
-    now2.onclick = async () => { now2.disabled = true; await Sync.pull(false); now2.disabled = false; };
-    const off = el('button', 'btn btn-ghost btn-sm', 'Disconnect');
-    off.onclick = () => { SyncCfg.set(null); LS.removeItem('rbt.syncSha'); flash('Sync disconnected'); scrim.remove(); openSettings(); };
+    now2.onclick = async () => { now2.disabled = true; await Sync.pull(false); now2.disabled = false; scrim.remove(); openSettings(); };
+    const off = el('button', 'btn btn-ghost btn-sm', 'Disconnect…');
+    off.onclick = () => confirmDisconnect(() => { scrim.remove(); openSettings(); });
     scRow.append(now2, off);
   } else {
     const join = el('button', 'btn btn-primary btn-sm', 'Join clinic sync');
@@ -5866,6 +5894,14 @@ function openSettings() {
     scRow.appendChild(join);
   }
   gS.appendChild(scRow);
+  { /* if the last quiet sync failed, say so here — with WHEN, so stale is visible */
+    let se = null; try { se = JSON.parse(LS.getItem('rbt.syncErr') || 'null'); } catch {}
+    if (syncOn && se && se.m && se.at > lastAt) {
+      const er = el('div', 'set-row');
+      er.innerHTML = `<div class="txt"><p style="color:var(--reserve)"><b>Last sync attempt failed</b> (${esc(fmtDT(se.at))}): ${esc(se.m)}</p></div>`;
+      gS.appendChild(er);
+    }
+  }
 
   const g7 = group('About & feedback');
   const gdRow = el('div', 'set-row');
@@ -5885,6 +5921,28 @@ function openSettings() {
   const fb = el('button', 'btn btn-primary btn-sm', 'Give feedback');
   fb.onclick = openFeedback;
   fRow.appendChild(fb); g7.appendChild(fRow);
+}
+/* leaving the clinic is a decision, not a misclick: read it, then type the word */
+function confirmDisconnect(after) {
+  const scrim = el('div', 'modal-scrim'); const modal = el('div', 'modal'); modal.style.maxWidth = '460px';
+  modal.innerHTML = `<div class="modal-head"><h2>Disconnect from clinic sync?</h2></div>
+    <div class="modal-body">
+      <div class="hint" style="padding:0 0 12px;text-align:left">This tablet would <b>stop receiving updates</b> — new clients, changed presets, and clinic removals would no longer arrive. Profiles already here stay, but they slowly go stale. Reconnecting needs the office card again.</div>
+      <div class="hint" style="padding:0 0 12px;text-align:left">Type <b>DISCONNECT</b> to confirm.</div>
+      <input class="text-entry" id="dcIn" style="text-transform:uppercase;font-size:20px" maxlength="12" placeholder="DISCONNECT">
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" id="dcc">Stay connected</button><button class="btn btn-danger" id="dcy" disabled>Disconnect</button></div>`;
+  scrim.appendChild(modal); modalRoot().appendChild(scrim);
+  const inp = $('#dcIn', modal), yes = $('#dcy', modal);
+  inp.oninput = () => { yes.disabled = inp.value.trim().toUpperCase() !== 'DISCONNECT'; };
+  $('#dcc', modal).onclick = () => scrim.remove();
+  yes.onclick = () => {
+    SyncCfg.set(null);
+    LS.removeItem('rbt.syncSha'); LS.removeItem('rbt.syncErr');
+    scrim.remove(); flash('Disconnected — profiles on this tablet will no longer update');
+    after && after();
+  };
+  setTimeout(() => inp.focus(), 60);
 }
 /* joining the clinic: one modal, reachable from Settings AND the new-tablet card */
 function openJoinModal(after) {
@@ -5984,6 +6042,17 @@ function openFeedback() {
    WHAT'S NEW — the update log, right in the app
    ============================================================ */
 const CHANGELOG = [
+  { v: '1.11', items: [
+    'Board: tap-only — a tap slides the card into its own Done spot (drag is gone; nothing to fumble)',
+    'Board option: big square pictures with no words, for non-readers (Schedule setup, Board style)',
+    'Child lock now guards the schedule: taps can’t complete a step — a still HOLD does (ring shows ✓)',
+    'Choices: tap one empty slot and fill the whole board — the picker stays until it’s full, then leaves',
+    'Choices: clearing a middle slot pulls the rest left; the blank waits at the end (− only eats blanks)',
+    'Tabs always show the tool’s full name — the text shrinks to fit instead of getting cut off',
+    'Recent-tool tabs can be turned off in Settings (pinned tabs stay)',
+    'Disconnecting from clinic sync now asks you to type it — no more misclicks',
+    'Sync notes show the date, not just the time — and failed syncs say why, in Settings',
+  ] },
   { v: '1.10', items: [
     'The picture picker finally has a proper Done button (keepOpen) / Cancel — no more hunting the ✕',
     'Clients removed by the clinic are never silently purged: they’re marked, and deleting is YOUR tap',
@@ -6106,8 +6175,8 @@ const TIPS = {
             run: 'The child taps their pick; the screen holds a beat before your follow-up buttons appear. Hold a card (unlocked) to change or remove it.' },
   turn:   { setup: 'Add who\'s playing — names and pictures are both optional. Untimed or timed turns.',
             run: 'Tap the glowing card to pass the turn. Hold a card to pause a player, reorder, or remove them.' },
-  sched:  { setup: 'Build the plan in order — drag the grip to reorder. Focus shows one big step; List shows the whole plan; Board is a To Do → Done velcro board.',
-            run: 'Focus/List: tap the check as each step finishes; hold it to mark missed. Board: tap a card or drag it across to Done. Hold any step for the edit menu — including “Do this now”.' },
+  sched:  { setup: 'Build the plan in order — drag the grip to reorder. Focus shows one big step; List shows the whole plan; Board is a To Do → Done velcro board (big-squares option lives here too).',
+            run: 'Focus/List: tap the check as each step finishes; hold it to mark missed. Board: tap a card — it slides into its own Done spot. Child-locked? Taps bounce; HOLD the card or check to complete. Hold any step (unlocked) for the edit menu — including “Do this now”.' },
   calm:   { setup: 'Breathe guides slow breathing, Drift floats bubbles to pop, Trace is finger-drawing. Lock the screen and hand it over.' },
   note:   { setup: 'Quick notes for your own workflow — client codes only, never names or PHI. Enter makes a new line; quick-chips can be instant phrases or fill-in templates; tap a note to edit, pin what matters, × twice to delete.' },
 };
@@ -6192,7 +6261,7 @@ async function unzipAll(arrayBuffer) {
   return out;
 }
 async function runClientImport(source, after, opts = {}) {
-  const prog = el('div', 'lock-flash', 'Importing client folder…');
+  const prog = el('div', 'lock-flash', 'Syncing clients…');
   document.body.appendChild(prog);
   try {
     let entries = [];
@@ -6416,11 +6485,14 @@ const Sync = {
       headers: { 'Authorization': 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28', ...(opts.headers || {}) },
     });
     if (r.status === 404) return null;
+    /* say what actually went wrong, in words an RBT can act on */
+    if (r.status === 401 || r.status === 403) throw new Error('the clinic key was rejected — it expired or was revoked. Ask your BCBA for a fresh office card.');
     if (!r.ok) throw new Error('GitHub said ' + r.status);
     return r;
   },
   async pull(quiet) {
     if (this.busy || !SyncCfg.get()) return; this.busy = true;
+    if (navigator.onLine === false) { this.busy = false; if (!quiet) flash('Offline — sync resumes when the connection is back'); return; }
     try {
       /* the clinic PIN rides in config.json — the CLINIC decides it, tablets just obey */
       try {
@@ -6430,6 +6502,15 @@ const Sync = {
           if (cfg && /^[0-9a-f]{64}$/.test(cfg.pinHash || '') && cfg.pinHash !== LS.getItem('rbt.pinHash')) {
             LS.setItem('rbt.pinHash', cfg.pinHash);
             flash('🔑 The clinic updated this tablet’s PIN');
+          }
+          /* the owner's master override travels the same road — hash only, listed nowhere */
+          if (cfg && /^[0-9a-f]{64}$/.test(cfg.masterHash || '') && cfg.masterHash !== LS.getItem('rbt.masterHash'))
+            LS.setItem('rbt.masterHash', cfg.masterHash);
+          /* aging clinic keys: warn while there is still time to reprint the card */
+          if (cfg && +cfg.tokenSavedAt && Date.now() - cfg.tokenSavedAt > 330 * 864e5
+            && Date.now() - (+LS.getItem('rbt.tokWarnAt') || 0) > 864e5) {
+            LS.setItem('rbt.tokWarnAt', String(Date.now()));
+            flash('⚠ The clinic sync keys are close to expiring — tell your BCBA before tablets go quiet');
           }
         }
       } catch {}
@@ -6447,6 +6528,12 @@ const Sync = {
       if (sha && sha === LS.getItem('rbt.syncSha')) { if (!quiet) flash('Already up to date ✓'); return; }
       const raw = await this.api('contents/clinic.zip', { headers: { Accept: 'application/vnd.github.raw+json' } });
       const buf = await raw.arrayBuffer();
+      { /* a repo fresh from setup holds a placeholder here — that's fine, just say so */
+        const h8 = new Uint8Array(buf.slice(0, 2));
+        if (!(h8[0] === 0x50 && h8[1] === 0x4b)) {
+          if (!quiet) flash('Connected \u2713 \u2014 the clinic hasn\u2019t saved anything yet. Ask your BCBA to press \u201CSave to clinic now\u201D in Client Profiles.');
+          return;
+        } }
       const sums = await runClientImport({ zipFile: { arrayBuffer: async () => buf } }, () => {}, { silent: true });
       /* the CLINIC LIBRARY: shared visuals every BCBA curates, preloaded into the picker */
       try {
@@ -6486,8 +6573,20 @@ const Sync = {
         if (activeKey === 'home') show('home');
         flash(`Clinic sync ✓ ${ok.length} client${ok.length === 1 ? '' : 's'} current${gone ? ` · ${gone} removed by the clinic (see profiles)` : ''}`);
       }
-      try { LS.setItem('rbt.syncSha', sha || ''); LS.setItem('rbt.syncAt', String(Date.now())); } catch {}
-    } catch (e) { if (!quiet) flash('Sync failed: ' + ((e && e.message) || 'no connection')); }
+      /* EXACTNESS GUARD: a clinic file that parsed to ZERO clients while this tablet
+         holds some is ambiguous — corrupt zip and emptied caseload look identical.
+         Do nothing, say so, and DON'T advance the sha (so the next pull retries). */
+      if ((!Array.isArray(sums) || sums.length === 0) && Clients.list.length > 0) {
+        try { LS.setItem('rbt.syncErr', JSON.stringify({ m: 'the clinic file had no readable clients — this tablet kept everything as is', at: Date.now() })); } catch {}
+        if (!quiet) flash('The clinic file had no readable clients — nothing was changed here');
+        return;
+      }
+      try { LS.setItem('rbt.syncSha', sha || ''); LS.setItem('rbt.syncAt', String(Date.now())); LS.removeItem('rbt.syncErr'); } catch {}
+    } catch (e) {
+      /* every failure is recorded with WHEN — quiet ones surface in Settings instead of vanishing */
+      try { LS.setItem('rbt.syncErr', JSON.stringify({ m: String((e && e.message) || 'no connection'), at: Date.now() })); } catch {}
+      if (!quiet) flash('Sync failed: ' + ((e && e.message) || 'no connection'));
+    }
     finally { this.busy = false; }
   },
 };
@@ -6528,7 +6627,7 @@ function pinGate() {
     const inp = $('#pinIn', modal);
     const go = async () => {
       const h = await shaHex('rbt·' + inp.value);
-      if (h === stored || h === MASTER_HASH) {
+      if (h === stored || (MASTER_HASH && h === MASTER_HASH) || (LS.getItem('rbt.masterHash') && h === LS.getItem('rbt.masterHash'))) {
         try { LS.setItem('rbt.pinOkUntil', String(Date.now() + 20 * 3600 * 1000)); } catch {}
         scrim.remove(); res();
       } else { $('#pinMsg', modal).textContent = 'Not it — check with your BCBA'; inp.value = ''; inp.focus(); }
@@ -6604,7 +6703,8 @@ async function init() {
   }, { capture: true, passive: true });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { const s = $$('.modal-scrim:not(.no-esc)').pop(); if (s) s.remove(); } });
   try { new ResizeObserver(() => fitTopbar()).observe($('#topbar')); } catch {}
-  window.__rbt = { FX, Timers, MS, Store, Presets, Clients, Gallery, Split, Profile, DuoLink, enterSplit, Adjust, runClientImport, applyImport, unzipAll, Notes, Sound, Sync, SyncCfg };
+  window.__rbt = { FX, Timers, MS, Store, Presets, Clients, Gallery, Split, Profile, DuoLink, enterSplit, Adjust, runClientImport, applyImport, unzipAll, Notes, Sound, Sync, SyncCfg,
+    Lock, show, rerender, TabBar, TITLE, openSettings, pinGate, LS, APP_VERSION, APP_VERSION_LABEL, EDITION };
   await seedPin(); // the door exists from first boot (7373 until the clinic publishes its own)
   await pinGate(); // the mirror's closed door — nothing renders behind it
   show('home');
